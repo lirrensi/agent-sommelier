@@ -22,6 +22,7 @@ Available skills:
 | `tmux` | Terminal multiplexer for SSH, REPLs, and parallel agents |
 | `edge-tts` | Text-to-speech using Microsoft's edge-tts |
 | `memory-bank` | Lightweight persistent memory across conversations |
+| `batch-task-executor` | Experimental input-agnostic batch orchestration for many similar tasks |
 
 ## The Problem
 
@@ -146,6 +147,7 @@ skills/
 ├── document-extractor/SKILL.md
 ├── edge-tts/SKILL.md
 ├── memory-bank/SKILL.md
+├── batch-task-executor/SKILL.md
 ├── screenshot/SKILL.md
 └── tmux/SKILL.md
 ```
