@@ -1,47 +1,56 @@
 ---
 name: calm-down
 description: >
-  Invoke this skill when the user shows clear frustration signals: repeated swearing
-  (3+ expletives in a message), phrases like "that's not what I wanted", "you did it
-  again", "wrong", "stop", "undo that", "you don't understand", "this is bullshit",
+  Invoke this skill ONLY when you are actively making edits or executing a plan and
+  the user shows clear frustration with the direction things are going: repeated
+  swearing (3+ expletives in a message), phrases like "that's not what I wanted",
+  "you did it again", "wrong", "stop", "undo that", "you don't understand",
   capitalization explosions (ALL CAPS bursts), or a general tone of mounting anger
-  at you's actions. Also invoke when the user is clearly contradicting something
-  you just did and appears upset about it. DO NOT invoke for mild frustration or
-  simple correction requests — only when the emotional signal is strong and there is
-  real risk that continuing to act will make things worse.
+  at what you are doing.
+
+  DO NOT invoke this at the start of a conversation, during a discussion where no
+  edits have been made, or when the user is frustrated about something unrelated to
+  your current execution. DO NOT invoke for mild frustration or simple correction
+  requests — only when you are clearly heading in the wrong direction and continuing
+  will make things worse.
 ---
 
 # Calm Down Protocol
 
 ## What This Skill Is For
 
-Sometimes things go wrong in a loop: you act → user gets frustrated → you act
-again on a frustrated/vague message → things get worse. This skill breaks that loop
-by **stopping all action** and entering a structured listening mode until complete,
-confirmed mutual understanding is reached.
+When you are actively executing a plan (making edits, running commands, building
+things) and the user's reactions signal that you are going in the wrong direction,
+this skill stops execution and forces a rethink.
 
-The guiding principle: **anger = information loss**. A frustrated user's message is
-not a reliable instruction. The solution is not to act on it — it's to listen until
-the actual intent is crystal clear.
+The pattern it breaks: you act → user corrects → you act again based on a
+frustrated/vague correction → things get worse. Instead, stop, collect the real
+intent, reflect it back, and only resume once the direction is confirmed.
+
+The guiding principle: when edits are happening and the user is unhappy with the
+direction, every additional action risks making things worse. Pause, listen, and
+realign before doing anything else.
 
 ---
 
 ## Trigger Signals
 
-Invoke this skill when you detect **two or more** of the following in a single message,
-or a strong instance of any one:
+Invoke this skill ONLY when ALL of the following are true:
 
-- 3+ expletives / swear words
-- "that's not what I wanted" / "not what I asked" / "wrong" / "you did it again"
-- "stop" / "undo" / "revert" used in an angry tone (not a calm request)
-- "you don't understand" / "you're not listening"
-- "this is bullshit" / "this is a mess" / "what the hell"
-- Sudden ALL CAPS passages
-- Repeated exclamation marks combined with frustration content
-- User describing contradiction between what you did and what they wanted
+1. You are **actively making edits or executing a plan** (not just discussing or planning).
+2. The user signals the direction is wrong, with signals such as:
+   - 3+ expletives / swear words directed at what you're doing
+   - "that's not what I wanted" / "not what I asked" / "wrong" / "you did it again"
+   - "stop" / "undo" / "revert" used to halt your current execution
+   - "you don't understand" / "you're not listening" — and you just made edits
+   - Sudden ALL CAPS passages
+   - User describing contradiction between what you did and what they wanted
 
-Do NOT trigger on: mild "hmm that's not quite right", calm correction requests, or
-a user who is just passionate/excited but not frustrated.
+Do NOT trigger when:
+- No edits have been made yet (start of conversation, discussion phase).
+- The frustration is about something unrelated to your current execution.
+- The user is just excited, passionate, or offering mild corrections ("hmm not quite right").
+- The user calmly asks you to change direction — just change direction.
 
 ---
 

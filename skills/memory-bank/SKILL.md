@@ -37,14 +37,16 @@ Use this fast decision tree when deciding what to save:
 - If the answer is **what happened?** -> save `episodic`
 - If the answer is **what is true now?** -> save or update `semantic`
 - If the answer is **how do we do this?** -> save or update `procedural`
-- If the answer is **more than one of those** -> save it in more than one form
+- If the answer is **more than one of those, and each would be retrieved differently** -> save in multiple forms (but in most cases, one file is enough)
 
 Mini examples:
 - "We had a nasty auth incident today" -> `episodic`
 - "The client prefers weekly async updates" -> `semantic`
 - "Here is the release checklist" -> `procedural`
-- "A failed deploy taught us a safer rollout order" -> `episodic` + `procedural`
-- "A conversation revealed a lasting user preference" -> `episodic` + `semantic`
+- "A failed deploy taught us a safer rollout order" -> `episodic` + `procedural` (the event and the new workflow are both worth preserving)
+- "A conversation revealed a lasting user preference" -> `episodic`
+
+Most knowledge fits cleanly into one memory type. Only create multiple files when the same information genuinely needs to be retrieved in two or more fundamentally different ways.
 
 ---
 
@@ -86,12 +88,14 @@ Examples:
 - Travel packing checklist
 - How to onboard a new client
 
-One interaction may produce more than one memory type. That's good.
+An interaction might span multiple memory types — but **don't force it**. Usually, one well-chosen file is enough.
 
-Example:
-- An incident happens -> save an `episodic` note
-- It reveals a durable constraint -> update a `semantic` note
-- It teaches a better workflow -> update a `procedural` note
+Example of when multiple files are warranted:
+- An incident happens -> save an `episodic` note (the event)
+- It reveals a durable constraint different from the event -> also update a `semantic` note (the constraint)
+- It teaches a better workflow -> also update a `procedural` note (the procedure)
+
+If the same takeaway can be captured in one file, stop there. Multiple files are only useful when retrieval differs materially.
 
 ---
 
@@ -124,8 +128,8 @@ Ask these questions:
    - Save or update `semantic`
 3. Is this a repeatable method or instruction?
    - Save or update `procedural`
-4. Does it fit more than one?
-   - Save it in more than one form when future retrieval would differ
+4. Does it truly span multiple categories in ways you'd search for differently?
+   - Only then save in multiple forms. In most cases, one file is enough — don't create extra files just because the knowledge technically touches more than one category.
 
 Examples:
 - "We debugged auth and found the cookie domain was wrong"
@@ -419,7 +423,7 @@ When in doubt:
 - choose `episodic` if the value is historical context
 - choose `semantic` if the value is current truth
 - choose `procedural` if the value is repeatable guidance
-- choose more than one if needed
+- choose more than one ONLY if the retrieval needs differ materially (rare)
 
 When something evolves across clearly distinct phases, new files tell a useful story:
 

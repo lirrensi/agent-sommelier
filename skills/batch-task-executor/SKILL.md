@@ -19,6 +19,12 @@ it decide whether to execute sequentially, fan out to workers, or ask for clarif
 This skill is **experimental**. Treat it as a planning and orchestration pattern first,
 not as a fixed CLI contract. Runtime-specific fan-out tools may differ across harnesses.
 
+**Project task systems:** If the project you're working in already has a task tracker,
+ticket system, TODO list, or any form of work-tracking infrastructure — use that.
+Don't create a new tracking mechanism when one already exists. This skill integrates
+with whatever is already in place; the convention is to work within the existing
+project infrastructure rather than adding a parallel system.
+
 ## Core Idea
 
 The input does not define the workflow. A CSV, markdown checklist, Jira board, folder of
