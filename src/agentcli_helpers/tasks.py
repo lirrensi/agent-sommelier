@@ -14,6 +14,7 @@ Usage:
     tasks update TSK-0001   # Modify a task
     tasks close TSK-0001     # Close a task (any status)
     tasks inbox             # Print inbox contents
+    tasks search <text>     # Full-text search across all tasks
 """
 
 from __future__ import annotations
@@ -75,6 +76,7 @@ TASKS_HEADER = """\
 #   tasks status            Session overview
 #   tasks history           Recently completed tasks
 #   tasks inbox             Print inbox.md
+#   tasks search <text>     Full-text search across all tasks
 #   tasks --help            Full documentation
 #
 # Statuses:  todo, in-progress, done, blocked, postponed, cancelled,
@@ -274,6 +276,17 @@ def _collect_all_tags(tasks: list[dict[str, Any]]) -> dict[str, int]:
     return dict(sorted(counts.items(), key=lambda x: x[1], reverse=True))
 
 
+def _normalize_notes(notes: Any) -> list[str]:
+    """Normalize notes to list[str]. Converts string to single-element list for backwards compat."""
+    if notes is None:
+        return []
+    if isinstance(notes, str):
+        return [notes]
+    if isinstance(notes, list):
+        return notes
+    return [str(notes)]
+
+
 def _inbox_line_count() -> int:
     """Return number of non-empty lines in inbox.md."""
     content = load_inbox()
@@ -387,7 +400,8 @@ def add_task(title: str, priority: str | None = None, tags: list[str] | None = N
     if related:
         task["related"] = related
     if notes:
-        task["notes"] = notes
+        # Store as list[str] — single string becomes one-element list
+        task["notes"] = [notes]
 
     # Prepend: newest at top
     tasks.insert(0, task)
@@ -397,7 +411,8 @@ def add_task(title: str, priority: str | None = None, tags: list[str] | None = N
 
 def update_task(task_id: str, status: str | None = None, priority: str | None = None,
                 tags: list[str] | None = None, related: str | None = None,
-                notes: str | None = None, closed: bool | None = None) -> dict[str, Any]:
+                notes: str | None = None, replace_notes: bool = False,
+                closed: bool | None = None) -> dict[str, Any]:
     """Update fields on an existing task. Tags are appended, not replaced.
 
     Returns the updated task dict.
@@ -422,7 +437,14 @@ def update_task(task_id: str, status: str | None = None, priority: str | None = 
     if related is not None:
         task["related"] = related
     if notes is not None:
-        task["notes"] = notes
+        existing = _normalize_notes(task.get("notes"))
+        if replace_notes or not existing:
+            # --replace-notes or no existing notes → set fresh list
+            task["notes"] = [notes]
+        else:
+            # Default: append to existing list
+            existing.append(notes)
+            task["notes"] = existing
 
     if closed is True:
         task["closed"] = True
@@ -471,8 +493,9 @@ def close_task(task_id: str, note: str | None = None) -> dict[str, Any]:
     task["closed_at"] = _now_iso()
     task["updated"] = _now_iso()
     if note:
-        existing_notes = task.get("notes", "")
-        task["notes"] = f"{existing_notes}\n{note}".strip() if existing_notes else note
+        existing_notes = _normalize_notes(task.get("notes"))
+        existing_notes.append(note)
+        task["notes"] = existing_notes
 
     # Save active list
     save_tasks_yaml(meta, tasks)
@@ -486,9 +509,12 @@ def close_task(task_id: str, note: str | None = None) -> dict[str, Any]:
 
 
 def filter_tasks(tasks: list[dict[str, Any]], status: str | None = None,
-                 tag: str | None = None, priority: str | None = None,
-                 source: str | None = None) -> list[dict[str, Any]]:
-    """Filter a task list by status, tag, priority, and/or source. All filters ANDed."""
+                 tags: list[str] | None = None, priority: str | None = None,
+                 source: str | None = None, related: str | None = None) -> list[dict[str, Any]]:
+    """Filter a task list by status, tags, priority, source, and/or related. All filters ANDed.
+
+    tags: list of tags — task must contain ALL of them (AND logic).
+    """
     result = tasks
     if status:
         result = [t for t in result if t.get("status") == status]
@@ -496,9 +522,42 @@ def filter_tasks(tasks: list[dict[str, Any]], status: str | None = None,
         result = [t for t in result if t.get("priority") == priority]
     if source:
         result = [t for t in result if t.get("source") == source]
-    if tag:
-        result = [t for t in result if tag in (t.get("tags") or [])]
+    if tags:
+        for tag in tags:
+            result = [t for t in result if tag in (t.get("tags") or [])]
+    if related:
+        result = [t for t in result if t.get("related") == related]
     return result
+
+
+# ---------------------------------------------------------------------------
+# Simple text search
+# ---------------------------------------------------------------------------
+
+
+def _task_text(task: dict[str, Any]) -> str:
+    """Build a searchable text blob from a task (lowercased)."""
+    parts: list[str] = [
+        task.get("id", ""),
+        task.get("title", ""),
+        task.get("status", ""),
+        task.get("priority", ""),
+        task.get("source", ""),
+        " ".join(task.get("tags", []) or []),
+    ]
+    notes = task.get("notes")
+    if notes:
+        if isinstance(notes, list):
+            parts.extend(str(n) for n in notes)
+        else:
+            parts.append(str(notes))
+    return " ".join(parts).lower()
+
+
+def search_tasks(tasks: list[dict], text: str) -> list[dict]:
+    """Simple case-insensitive text search across all task fields."""
+    needle = text.lower()
+    return [t for t in tasks if needle in _task_text(t)]
 
 
 # ---------------------------------------------------------------------------
@@ -560,13 +619,23 @@ def add(title: str, tags: tuple[str, ...], priority: str | None, source: str,
 
 @main.command("list")
 @click.option("--status", type=click.Choice(list(VALID_STATUSES)), help="Filter by status")
-@click.option("--tag", help="Filter by tag")
+@click.option("--tag", "tags", multiple=True, help="Filter by tag (repeatable, AND logic)")
 @click.option("--priority", type=click.Choice(list(VALID_PRIORITIES)), help="Filter by priority")
 @click.option("--source", type=click.Choice(list(VALID_SOURCES)), help="Filter by source")
+@click.option("--related", "-r", help="Filter by related task ID")
+@click.option("--text", "-t", help="Full-text search (combined with other filters)")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
-def list_cmd(status: str | None, tag: str | None, priority: str | None,
-             source: str | None, json_output: bool):
-    """List active tasks (not done). Newest first."""
+def list_cmd(status: str | None, tags: tuple[str, ...], priority: str | None,
+             source: str | None, related: str | None, text: str | None,
+             json_output: bool):
+    """List active tasks (not done). Newest first.
+
+    \b
+      tasks list --status todo
+      tasks list --tag bug --tag auth
+      tasks list --related TSK-0001
+      tasks list --text "login"
+    """
     try:
         _, tasks = load_tasks_yaml()
     except FileNotFoundError as e:
@@ -574,7 +643,12 @@ def list_cmd(status: str | None, tag: str | None, priority: str | None,
         sys.exit(1)
 
     tasks = [t for t in tasks if not t.get("closed", False)]
-    tasks = filter_tasks(tasks, status=status, tag=tag, priority=priority, source=source)
+    tasks = filter_tasks(tasks, status=status,
+                         tags=list(tags) if tags else None,
+                         priority=priority, source=source, related=related)
+
+    if text:
+        tasks = search_tasks(tasks, text)
 
     if json_output:
         click.echo(__import__("json").dumps(tasks, indent=2))
@@ -652,8 +726,15 @@ def show(task_id: str):
         click.echo(f"  closed_at: {task.get('closed_at')}")
     elif task.get("completed"):
         click.echo(f"  completed: {task.get('completed')}")
-    if task.get("notes"):
-        click.echo(f"  notes: >\n    {task['notes']}")
+    notes_val = task.get("notes")
+    if notes_val:
+        notes_list = _normalize_notes(notes_val)
+        if len(notes_list) == 1:
+            click.echo(f"  notes: {notes_list[0]}")
+        else:
+            click.echo("  notes:")
+            for i, note in enumerate(notes_list, 1):
+                click.echo(f"    {i}. {note}")
     click.echo("")
 
 
@@ -665,10 +746,11 @@ def show(task_id: str):
 @click.option("--tag", "-t", "tags", multiple=True, help="Tag(s) to append (repeatable)")
 @click.option("--priority", "-p", type=click.Choice(list(VALID_PRIORITIES)), help="Change priority")
 @click.option("--related", "-r", help="Set related task ID")
-@click.option("--notes", "-n", help="Set notes (replaces existing)")
+@click.option("--notes", "-n", help="Append a note (use --replace-notes to overwrite)")
+@click.option("--replace-notes", is_flag=True, help="Replace notes instead of appending")
 @click.option("--closed", "-c", is_flag=True, help="Close the task (move to closed.yaml)")
 def update(task_id: str, status: str | None, tags: tuple[str, ...], priority: str | None,
-           related: str | None, notes: str | None, closed: bool):
+           related: str | None, notes: str | None, replace_notes: bool, closed: bool):
     """Update fields on a task. Tags are appended to existing."""
     try:
         task = update_task(
@@ -678,6 +760,7 @@ def update(task_id: str, status: str | None, tags: tuple[str, ...], priority: st
             tags=list(tags) if tags else None,
             related=related,
             notes=notes,
+            replace_notes=replace_notes,
             closed=closed if closed else None,
         )
         click.echo(f"Updated {task['id']}: {task['title']}")
@@ -841,19 +924,26 @@ def status(json_output: bool):
 # ---- history ----
 
 @main.command()
-@click.option("--tag", help="Filter by tag")
+@click.option("--tag", "tags", multiple=True, help="Filter by tag (repeatable, AND logic)")
+@click.option("--text", help="Full-text search within closed tasks")
+@click.option("--related", "-r", help="Filter by related task ID")
 @click.option("--limit", default="30", help="Number of tasks to show, or 'all' (default: 30)")
 @click.option("--offset", default=0, type=int, help="Skip N entries from the newest (default: 0)")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
-def history(tag: str | None, limit: str, offset: int, json_output: bool):
+def history(tags: tuple[str, ...], text: str | None, related: str | None,
+            limit: str, offset: int, json_output: bool):
     """Show recently closed tasks (newest first). Default limit: 30.
 
     Use --limit all to show everything. Use --offset N to page through results.
     """
     closed_list = load_closed_yaml()
 
-    if tag:
-        closed_list = [t for t in closed_list if tag in (t.get("tags") or [])]
+    closed_list = filter_tasks(closed_list,
+                               tags=list(tags) if tags else None,
+                               related=related)
+
+    if text:
+        closed_list = search_tasks(closed_list, text)
 
     total = len(closed_list)
 
@@ -923,6 +1013,65 @@ def inbox():
         click.echo(content)
     else:
         click.echo("Inbox is empty.")
+
+
+# ---- search ----
+
+@main.command()
+@click.argument("text")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+def search(text: str, json_output: bool):
+    """Full-text search across ALL tasks (active + closed).
+
+    \b
+    Examples:
+      tasks search login
+      tasks search bug
+      tasks search "dark mode"
+    """
+    try:
+        _, tasks = load_tasks_yaml()
+        closed_list = load_closed_yaml()
+    except FileNotFoundError as e:
+        click.echo(str(e), err=True)
+        sys.exit(1)
+
+    # Merge active + closed, deduplicating by id
+    all_tasks: list[dict] = list(tasks)
+    active_ids = {t.get("id") for t in all_tasks}
+    for ct in closed_list:
+        if ct.get("id") not in active_ids:
+            all_tasks.append(ct)
+
+    results = search_tasks(all_tasks, text)
+
+    if json_output:
+        click.echo(__import__("json").dumps(results, indent=2))
+        return
+
+    if not results:
+        click.echo("No results found.")
+        return
+
+    table = Table(title=f"Search: {text}")
+    table.add_column("ID", style="cyan")
+    table.add_column("Status", style="yellow")
+    table.add_column("Priority", style="magenta")
+    table.add_column("Title", style="white")
+    table.add_column("Tags", style="green")
+    table.add_column("Source", style="dim")
+
+    for t in results:
+        table.add_row(
+            t.get("id", "?"),
+            t.get("status", "?"),
+            t.get("priority", "-"),
+            t.get("title", "?"),
+            ", ".join(t.get("tags", []) or []),
+            t.get("source", "-"),
+        )
+
+    console.print(table)
 
 
 if __name__ == "__main__":
