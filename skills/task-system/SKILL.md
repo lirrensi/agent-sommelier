@@ -13,20 +13,20 @@ A lightweight, **static, file-based task management system** embedded directly i
 
 ## Core Philosophy
 
-- **Static, file-based, in-repo** — Three files in `tasks/`: `inbox.md`, `tasks.yaml`, `done.yaml`. No database, no service, no setup beyond `tasks init`.
-- **Tasks are permanent history** — Nothing is ever deleted. Tasks flow from `tasks.yaml` (active) to `done.yaml` (archive). Once a task is created, its record persists for the life of the repository.
+- **Static, file-based, in-repo** — Three files in `tasks/`: `inbox.md`, `tasks.yaml`, `closed.yaml`. No database, no service, no setup beyond `tasks init`.
+- **Tasks are permanent history** — Nothing is ever deleted. Tasks flow from `tasks.yaml` (active) to `closed.yaml` (archive). Once a task is created, its record persists for the life of the repository.
 - **Purpose: manage project complexity** — Track what needs doing, what is in progress, what is done. Keep the agent and human aligned on priorities without losing context across sessions.
 - **12 statuses, any lifecycle** — Tasks can hold any of 12 statuses: `todo`, `in-progress`, `done`, `blocked`, `postponed`, `cancelled`, `review`, `waiting`, `parked`, `deferred`, `backlog`, `abandoned`. You move between them freely with `tasks update --status <name>` — there are no restrictions on transitions.
 - **Counter-based IDs** — Tasks get `TSK-NNNN` IDs (e.g. `TSK-0001`). Auto-incrementing, no gaps are guaranteed (skipped IDs on concurrent writes are acceptable).
-- **Newest-first ordering** — Recent tasks appear at the top of the active list. Done tasks are oldest-first (chronological append).
+- **Newest-first ordering** — Recent tasks appear at the top of the active list. Closed tasks are oldest-first (chronological append).
 - **Growing complexity only when needed** — The system intentionally started minimal. New features are added only when a real need emerges.
 
 ### ⚠️ Golden Rule: YAML files are CLI-only. Inbox.md is free-form.
 
 | File | Who edits it | How |
 |------|-------------|-----|
-| `tasks.yaml` | **Never by hand** | CLI only (`tasks add`, `tasks update`, `tasks done`) |
-| `done.yaml` | **Never by hand** | CLI only (`tasks done` appends automatically) |
+| `tasks.yaml` | **Never by hand** | CLI only (`tasks add`, `tasks update`, `tasks close`) |
+| `closed.yaml` | **Never by hand** | CLI only (`tasks close` appends automatically) |
 | `inbox.md` | **Anyone, any time** | Free-form text — humans dump ideas, agents paste notes, raw scraps live here |
 
 The two YAML files are machine-managed. Editing them by hand will result in overwritten changes the next time a CLI command runs. **Always use the CLI to create, update, or complete tasks.**
@@ -44,8 +44,8 @@ The inbox is the opposite — it is explicitly a free-form scratch file. Write t
 <project-root>/
   tasks/
     inbox.md       # Raw dump zone — paste ideas, notes, scraps here
-    tasks.yaml     # Active task list (any status except done)
-    done.yaml      # Completed task archive (append-only, permanent)
+    tasks.yaml     # Active task list (any status, closed=false)
+    closed.yaml    # Closed task archive (append-only, permanent)
 ```
 
 All files are self-documenting — open any YAML file and the header explains the system.
@@ -83,10 +83,10 @@ tasks update TSK-0001 --status review            # needs review
 tasks update TSK-0001 --status done              # finished (moves to archive)
 ```
 
-> **`tasks done TSK-NNNN` is a shortcut** for `tasks update TSK-NNNN --status done`
-> plus moving the task from `tasks.yaml` to `done.yaml`. Use it when you are truly finishing work.
-> Use `tasks update --status done` when you want the status change **without** moving to the archive
-> (e.g. for a task that was already archived and you're noting its final status).
+> **`tasks close TSK-NNNN`** moves a task from `tasks.yaml` to `closed.yaml`
+> without changing its status. Use it when a task is no longer active.
+> Use `tasks update --status done` when you only want to change the status field
+> without closing the task.
 
 ### Status lifecycle (common patterns)
 
@@ -119,13 +119,40 @@ tasks next                                      # only shows "todo" tasks
 
 ---
 
+## Closed (Archival)
+
+The `closed` boolean flag separates active tasks from historical ones.
+
+| `closed` value | Lives in | Meaning |
+|---|---|---|
+| `false` | `tasks.yaml` | Active — shows up in `tasks list`, `tasks status`, `tasks next` |
+| `true` | `closed.yaml` | Historical — does NOT show up in daily views |
+
+Close a task without changing its status:
+```bash
+tasks close TSK-NNNN                      # archive as-is, status preserved
+tasks close TSK-NNNN --note "No longer needed"  # archive with note
+```
+
+Or set a specific status and close at the same time:
+```bash
+tasks update TSK-NNNN --status cancelled --closed   # cancelled + archived
+tasks update TSK-NNNN --status abandoned  --closed  # abandoned + archived
+```
+
+> A task's status says *what state it is in*. The `closed` flag says *whether to look at it*.
+> You can close a task with any status — `blocked`, `cancelled`, `postponed`, `backlog` — and
+> it moves to `closed.yaml` without modifying the status.
+
+---
+
 ## CLI Reference
 
 All commands run as `tasks <command>` from the project root.
 
 ### `tasks init`
 
-Bootstrap the task system. Creates `tasks/`, `inbox.md`, `tasks.yaml`, and `done.yaml`.
+Bootstrap the task system. Creates `tasks/`, `inbox.md`, `tasks.yaml`, and `closed.yaml`.
 
 - **Idempotent** — safe to run multiple times. Existing data is never touched.
 - Run this first in any new project that should use the task system.
@@ -134,7 +161,7 @@ Bootstrap the task system. Creates `tasks/`, `inbox.md`, `tasks.yaml`, and `done
 tasks init
 # → Created tasks/inbox.md
 # → Created tasks/tasks.yaml
-# → Created tasks/done.yaml
+# → Created tasks/closed.yaml
 # → Task system initialized.
 ```
 
@@ -168,7 +195,7 @@ tasks add "Write tests" --related TSK-0003 --notes "Must cover edge cases"
 
 ### `tasks list`
 
-List active tasks (not done). Newest first.
+List active tasks (not closed). Newest first.
 
 ```bash
 tasks list                                    # All active tasks
@@ -208,7 +235,7 @@ tasks show TSK-0001
 
 ```
 
-- Looks in both active and done lists
+- Looks in both active and closed lists
 - Related tasks show their current status and title
 - Stale related references show `(not found)`
 
@@ -231,6 +258,9 @@ tasks update TSK-0001 --status deferred          # delayed to known date
 tasks update TSK-0001 --status backlog           # lower priority queue
 tasks update TSK-0001 --status abandoned         # permanently dropped
 
+# Close while setting a specific status
+tasks update TSK-0001 --status cancelled --closed
+
 # Modify other fields
 tasks update TSK-0001 --priority urgent --tag needs-review
 tasks update TSK-0001 --notes "Revised approach: use OAuth2" --related TSK-0005
@@ -244,31 +274,31 @@ tasks update TSK-0001 --notes "Revised approach: use OAuth2" --related TSK-0005
 | `--tag` | `-t` | **Append** tag(s) to existing tags (repeatable) — does NOT replace |
 | `--related` | `-r` | Set related task ID |
 | `--notes` | `-n` | **Replace** notes (does NOT append) |
+| `--closed` | `-c` | Close the task (move to `closed.yaml`) — can be combined with `--status` |
 
 > **Tip:** Status is the most fluid field in the system. Change it freely as the task moves through your workflow. There is no pipeline — any status to any status is allowed.
 
 ---
 
-### `tasks done <TSK-NNNN>`
+### `tasks close <TSK-NNNN>`
 
-Complete a task. Moves it from `tasks.yaml` to `done.yaml`.
+Close a task. Moves it from `tasks.yaml` to `closed.yaml`.
 
 ```bash
-tasks done TSK-0001
-tasks done TSK-0001 --note "All tests passing, deployed to staging"
+tasks close TSK-0001
+tasks close TSK-0001 --note "All tests passing, deployed to staging"
 ```
 
-- Sets `status: done`, adds `completed` timestamp
+- Sets `closed: true`, adds `closed_at` timestamp — does NOT change `status`
 - Appends optional `--note` to existing notes (line break separated)
-- Task is removed from `tasks.yaml` and appended to `done.yaml`
-- **Error if task already done**: "Task already done: TSK-NNNN"
-- **Error if task not found**: "Task not found: TSK-NNNN"
+- Task is removed from `tasks.yaml` and appended to `closed.yaml`
+- **Error if already closed**: "Task already closed: TSK-NNNN"
+- **Error if not found**: "Task not found: TSK-NNNN"
 
-> **`tasks done` vs `tasks update --status done`:**  
-> `tasks done` moves the task to the archive (`done.yaml`).  
-> `tasks update --status done` only changes the status field — the task stays in `tasks.yaml`.
-> Use `tasks done` for truly finished work. Use `update --status done` only if the task is
-> already in the archive and you are correcting its recorded final status.
+> **`tasks close` vs `tasks update --closed`:**
+> Both archive the task to `closed.yaml`. `tasks close` is the dedicated command.
+> `tasks update --closed` is for when you also want to set a different status:
+> `tasks update TSK-NNNN --status cancelled --closed`.
 
 ---
 
@@ -290,7 +320,7 @@ tasks next --skip-related            # Exclude tasks whose related target isn't 
 | `--take` | Number of tasks to show, or `all` (default: `1`) |
 | `--tag` | Filter by tag before sorting |
 | `--priority` | Filter by priority before sorting |
-| `--skip-related` | Exclude tasks whose `related` target is not yet done (ensures dependencies are resolved first) |
+| `--skip-related` | Exclude tasks whose `related` target is not yet done or closed (ensures dependencies are resolved first) |
 
 **Priority order:** `urgent` > `high` > `medium` > `low` > unset
 
@@ -328,16 +358,28 @@ Inbox has 3 unprocessed entries. Run `tasks inbox` to view.
 
 ### `tasks history`
 
-Show recently completed tasks (newest first).
+Show recently closed tasks (newest first). Default limit: 30.
 
 ```bash
-tasks history                  # Rich table (newest first)
-tasks history --json           # JSON array (newest first)
-tasks history --tag deploy     # Filter by tag
+tasks history                        # Show 30 most recent (default)
+tasks history --limit 10             # Show 10 most recent
+tasks history --limit all            # Show everything
+tasks history --offset 30            # Skip 30, show next page
+tasks history --offset 30 --limit 10 # Page 4: skip 30, show 10
+tasks history --json                 # JSON array (respects --limit/--offset)
+tasks history --tag deploy           # Filter by tag, then apply limit/offset
 ```
 
-- Done tasks are slightly stale — shows the most recently completed
-- Use `--json` for machine consumption or filtering
+**Options:**
+| Flag | Description |
+|------|-------------|
+| `--limit` | Number of tasks to show, or `all` (default: `30`) |
+| `--offset` | Skip N entries from the newest (default: `0`) |
+| `--tag` | Filter by tag before limiting |
+| `--json` | Output raw JSON instead of a Rich table |
+
+- When total exceeds the shown count, a hint is printed: `Showing 30 of 120. Use --offset 30 to see next page, --limit all to see everything.`
+- Use `--json` for machine consumption or filtering without the hint
 
 ---
 
@@ -442,8 +484,8 @@ tasks update TSK-0004 --priority urgent --notes "Client escalation, needs immedi
 # Cancelled — no longer relevant
 tasks update TSK-0004 --status cancelled --notes "Requirement dropped"
 
-# Truly done
-tasks done TSK-0004 --note "Deployed to prod, monitors green"
+# Close it — could be cancelled, abandoned, or finished
+tasks close TSK-0004 --note "Deployed to prod, monitors green"
 ```
 
 ### Moving Between Statuses
@@ -461,7 +503,7 @@ tasks update TSK-0011 --status todo --notes "Review found issues, needs rework"
 tasks update TSK-0012 --status abandoned --notes "Proof of concept failed"
 ```
 
-The only special status is `done` — use `tasks done TSK-NNNN` to move it to the archive.
+The only special status is `done` — use `tasks close TSK-NNNN` to move it to the archive.
 Use `tasks update TSK-NNNN --status done` only when the task is already in the archive
 and you are backdating or correcting its recorded status.
 
@@ -489,9 +531,9 @@ Use the task system **proactively** — not just when asked. Good triggers:
   ```bash
   tasks add "Investigate slow query in reports" --priority medium --tag performance
   ```
-- **When you complete work**: Mark the task done with a closing note:
+- **When you complete work**: Close the task with a closing note:
   ```bash
-  tasks done TSK-0005 --note "Found: missing index on user_id. Added migration."
+  tasks close TSK-0005 --note "Found: missing index on user_id. Added migration."
   ```
 - **When context shifts**: Update the task — change status, priority, add tags, append context:
   ```bash
@@ -512,9 +554,9 @@ Use the task system **proactively** — not just when asked. Good triggers:
 ### When NOT to use it
 
 - Don't create tasks for things already tracked in the task system (duplicates)
-- **Never edit `tasks.yaml` or `done.yaml` by hand** — always use the CLI. Manual edits will be overwritten.
+- **Never edit `tasks.yaml` or `closed.yaml` by hand** — always use the CLI. Manual edits will be overwritten.
 - **Inbox.md IS the exception** — edit it freely. It is a scratch file, not a managed data store.
-- Don't delete tasks — they're permanent history. Mark them done instead.
+- Don't delete tasks — they're permanent history. Close them instead.
 - Don't use this for ephemeral runtime tracking (use your runtime task tools for that).
 
 ---
@@ -532,7 +574,7 @@ Use the task system **proactively** — not just when asked. Good triggers:
 
 - Tasks document what was done and why — valuable for post-mortems, retrospectives, and onboarding.
 - "Done" is not "delete." A completed task is a record of accomplishment, not garbage.
-- The done archive grows as a project history that can be searched, analyzed, and learned from.
+- The closed archive grows as a project history that can be searched, analyzed, and learned from.
 
 ### Why separate from runtime task tools?
 
