@@ -23,6 +23,10 @@ Available skills:
 | `edge-tts` | Text-to-speech using Microsoft's edge-tts |
 | `memory-bank` | Lightweight persistent memory across conversations |
 | `batch-task-executor` | Experimental input-agnostic batch orchestration for many similar tasks |
+| `best-practices-researcher` | Meta-skill for researching best practices and making technology decisions |
+| `calm-down` | De-escalation protocol when the agent is heading the wrong direction |
+| `micropatch` | Semantic fork customization — keep fork features alive across upstream updates |
+| `task-system` | In-repo task management with 12 statuses, CLI-driven, permanent history |
 
 ## The Problem
 
@@ -35,6 +39,8 @@ Need a notification? Good luck cross-platform. Windows, macOS, Linux all do it d
 Cron jobs? Great, but writing cron expressions at 3am? Not exactly human-friendly.
 
 And don't get me started on screenshots.
+
+Then there's **task management**. You start a session, you plan some work, the agent does its thing — but who's tracking what's left? Without a task system, context evaporates between sessions.
 
 ## The Solution
 
@@ -53,6 +59,7 @@ That's it. Pick what you need:
 | `notify` | Cross-platform desktop notifications | Built-in |
 | `bg` | Background jobs that don't disappear | Built-in |
 | `screenshot` | Screen capture that actually works | `uv tool install "git+https://github.com/lirrensi/agent-cli-helpers#screenshot"` |
+| `tasks` | In-repo task management with 12 statuses | Built-in |
 
 Or install everything:
 ```bash
@@ -94,7 +101,7 @@ Works on Windows, macOS, and Linux. No platform-specific code in your scripts.
 
 ### bg — Background jobs, tracked
 
-`bg` runs detached commands without tmux or a second terminal. `bg run` returns immediately after creating the job handle; a detached worker finishes the launch in the background and jobs appear running unless failure is proven. A short best-effort PID probe updates the record after a few seconds when it can. On Windows it prefers PowerShell 7, then Windows PowerShell, then `cmd.exe`, and launches jobs without a visible console window when PowerShell is available. Terminal jobs are auto-pruned after 1 hour and capped at 32 records, while running jobs are never evicted. It also supports `bg wait`, `bg wait --match`, `bg wait-all`, and `bg prune`.
+`bg` runs detached commands without tmux or a second terminal. `bg run` returns immediately after creating the job handle; a detached worker finishes the launch in the background and jobs appear running unless failure is proven. A short best-effort PID probe updates the record after a few seconds when it can. On Windows it prefers PowerShell 7, then Windows PowerShell, then `cmd.exe`, and launches jobs without a visible console window when PowerShell is available. Terminal jobs are auto-pruned after 1 hour and capped at 32 records, while running jobs are never evicted. It also supports `bg wait`, `bg wait --match`, `bg wait-all`, `bg prune`, and `bg restart`.
 
 ```bash
 # Bash / zsh
@@ -135,6 +142,42 @@ notify "Captured" "$path"
 
 Cross-platform using `mss` library, with fallbacks to native tools on Linux.
 
+### tasks — Task management, in-repo
+
+A lightweight, file-based task system that lives in the repo. No database, no service, no setup beyond `tasks init`. Tasks are permanent history — once created, they're never deleted.
+
+```bash
+# Bootstrap (creates tasks/ directory)
+tasks init
+
+# Create a task
+tasks add "Refactor the auth module"
+
+# See what needs doing
+tasks list
+tasks next          # highest-priority todo
+tasks status        # session overview
+
+# Get details
+tasks show TSK-0042
+
+# Update progress
+tasks update TSK-0042 --status in-progress --priority high
+
+# Close when done
+tasks close TSK-0042
+
+# Browse archive
+tasks history
+
+# Dump raw ideas
+tasks inbox
+```
+
+**12 statuses** — `todo`, `in-progress`, `done`, `blocked`, `postponed`, `cancelled`, `review`, `waiting`, `parked`, `deferred`, `backlog`, `abandoned`. Move freely between them — no restrictions on transitions.
+
+Data lives in `tasks/tasks.yaml` (active) and `tasks/closed.yaml` (archive). The `tasks/` directory is gitignored — each clone has its own local task state. Use `tasks inbox` for free-form idea dumps in `tasks/inbox.md`.
+
 ## For AI Agents
 
 This repo also includes **skills** — instructions your agent can use to self-install tools on demand.
@@ -149,7 +192,11 @@ skills/
 ├── memory-bank/SKILL.md
 ├── batch-task-executor/SKILL.md
 ├── screenshot/SKILL.md
-└── tmux/SKILL.md
+├── tmux/SKILL.md
+├── best-practices-researcher/SKILL.md
+├── calm-down/SKILL.md
+├── micropatch/SKILL.md
+└── task-system/SKILL.md
 ```
 
 The pattern is simple:
@@ -159,9 +206,33 @@ The pattern is simple:
 
 No MCP servers. No configuration. No OAuth. Just tools.
 
+## Repository Map
+
+```
+AgentCLI_Helpers/
+├── src/agentcli_helpers/    # CLI tool implementations (Python)
+│   ├── __init__.py
+│   ├── notify.py            # Desktop notifications
+│   ├── bg.py                # Background job manager
+│   ├── crony.py             # Cron job scheduler
+│   ├── screenshot.py        # Screen capture
+│   └── tasks.py             # In-repo task management
+├── skills/                  # Agent skill definitions (13 skills)
+├── docs/                    # Architecture & product documentation
+│   ├── product.md           # Behavior specs & CLI reference
+│   └── arch.md              # Implementation details
+├── agent_chat/              # Design discussions & execution plans
+├── tests/                   # Test suite
+├── private/                 # Private scratch notes (gitignored)
+├── tasks/                   # Local task files (gitignored)
+├── pyproject.toml           # Package metadata & entry points
+├── uv.lock                  # Locked dependencies
+└── README.md
+```
+
 ## Why This Exists
 
-You can do all of this in raw bash. Seriously — background jobs, notifications, cron, screenshots — it's all possible with the right incantations.
+You can do all of this in raw bash. Seriously — background jobs, notifications, cron, screenshots, task tracking — it's all possible with the right incantations.
 
 But it's *ugly*. It's *error-prone*. And writing 3 lines of PowerShell just to show a notification is a waste of energy.
 
