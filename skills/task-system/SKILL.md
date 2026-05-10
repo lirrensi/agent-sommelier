@@ -184,14 +184,12 @@ tasks add "Write tests" --related TSK-0003 --notes "Must cover edge cases"
 | `--priority` | `-p` | Priority: `urgent`, `high`, `medium`, `low` |
 | `--source` | `-s` | Source: `inbox`, `audit`, `test`, `jira`, `agent`, `idea` (default: `agent`) |
 | `--related` | `-r` | Related task ID (e.g. `TSK-0042`) |
-| `--notes` | `-n` | Freeform notes (appendable array — see below) |
-| `--definition-of-done` | `-d` | Optional: what "done" looks like for this task |
+| `--notes` | `-n` | Freeform notes (stored as array — see below) |
 
 **Notes:**
 - Tags are normalized to lowercase, whitespace becomes hyphens
 - New tasks are prepended (newest at top)
 - Default source is `agent` if not specified
-- `definition_of_done` is optional — use it when the title alone isn't enough to know when the task is finished. If you can't write a clear `definition_of_done`, ask clarifying questions before creating the task.
 
 ---
 
@@ -202,18 +200,22 @@ List active tasks (not closed). Newest first.
 ```bash
 tasks list                                    # All active tasks
 tasks list --status todo                      # Only todo tasks
-tasks list --tag bug                          # Only tasks with 'bug' tag
+tasks list --tag bug --tag auth               # Tasks with BOTH 'bug' AND 'auth' tags
 tasks list --priority high --status in-progress
+tasks list --text "login"                     # Full-text search in active tasks
+tasks list --related TSK-0001                 # Tasks related to TSK-0001
 tasks list --json                             # JSON output for programmatic use
 ```
 
 **Options:**
 | Flag | Description |
 |------|-------------|
-| `--status` | Filter by status (12 options: `todo`, `in-progress`, `done`, `blocked`, `postponed`, `cancelled`, `review`, `waiting`, `parked`, `deferred`, `backlog`, `abandoned`) |
-| `--tag` | Filter by tag (single tag) |
+| `--status` | Filter by status (12 options) |
+| `--tag` | Filter by tag (repeatable, AND logic) |
 | `--priority` | Filter by priority |
 | `--source` | Filter by source |
+| `--related` | Filter by related task ID |
+| `--text` | Full-text search across titles, notes, tags, and fields |
 | `--json` | Output raw JSON instead of a Rich table |
 
 ---
@@ -308,7 +310,7 @@ tasks close TSK-0001 --note "All tests passing, deployed to staging"
 ```
 
 - Sets `closed: true`, adds `closed_at` timestamp — does NOT change `status`
-- Appends optional `--note` to existing notes (line break separated)
+- Appends optional `--note` to the notes array (same as `tasks update --notes`)
 - Task is removed from `tasks.yaml` and appended to `closed.yaml`
 - **Error if already closed**: "Task already closed: TSK-NNNN"
 - **Error if not found**: "Task not found: TSK-NNNN"
@@ -386,6 +388,7 @@ tasks history --offset 30            # Skip 30, show next page
 tasks history --offset 30 --limit 10 # Page 4: skip 30, show 10
 tasks history --json                 # JSON array (respects --limit/--offset)
 tasks history --tag deploy           # Filter by tag, then apply limit/offset
+tasks history --text "auth"          # Full-text search in closed tasks
 ```
 
 **Options:**
@@ -393,7 +396,9 @@ tasks history --tag deploy           # Filter by tag, then apply limit/offset
 |------|-------------|
 | `--limit` | Number of tasks to show, or `all` (default: `30`) |
 | `--offset` | Skip N entries from the newest (default: `0`) |
-| `--tag` | Filter by tag before limiting |
+| `--tag` | Filter by tag (repeatable, AND logic) |
+| `--related` | Filter by related task ID |
+| `--text` | Full-text search across titles, notes, tags, and fields |
 | `--json` | Output raw JSON instead of a Rich table |
 
 - When total exceeds the shown count, a hint is printed: `Showing 30 of 120. Use --offset 30 to see next page, --limit all to see everything.`
@@ -436,16 +441,17 @@ tasks <command> --help         # Help for a specific command
 
 ---
 
-### `tasks search` (planned)
+### `tasks search <text>`
 
-Full-text search across all task fields — titles, notes, `definition_of_done`, tags, and context.
+Full-text search across **all tasks** — both active and closed. Case-insensitive, searches titles, notes, tags, status, priority, source, and IDs.
 
 ```bash
-tasks search "auth"                     # any mention of "auth"
-tasks search "status:todo AND tag:bug"  # simple query DSL
+tasks search login                      # any mention of "login"
+tasks search "dark mode"                # multi-word search
+tasks search bug --json                 # JSON output
 ```
 
-> **Status:** Not yet implemented. See `TSK-0043` in this repository.
+> **Note:** This is simple substring search, not a query DSL. For structured filters (status, tags, priority), use `tasks list` or `tasks history` instead.
 
 ---
 
@@ -472,10 +478,10 @@ tasks inbox
 # 2. Draft tasks for every actionable item
 #    For each item, ask: "Is this clear enough to execute without further input?"
 #    If unclear → ask the user clarifying questions BEFORE creating the task
-#    If clear  → draft with title, notes, definition_of_done, priority, tags
+#    If clear  → draft with title, notes, priority, tags
 
-tasks add "Fix login timeout on mobile" --source inbox --priority high --tag bug --definition-of-done "Login page loads in <2s on iOS Safari and Android Chrome"
-tasks add "Update README with API examples" --source inbox --priority low --tag docs --definition-of-done "README contains curl examples for all 5 endpoints"
+tasks add "Fix login timeout on mobile" --source inbox --priority high --tag bug --notes "Must reproduce on iOS Safari and Android Chrome"
+tasks add "Update README with API examples" --source inbox --priority low --tag docs --notes "Add curl examples for all 5 endpoints"
 
 # 3. Present the draft tasks to the user for confirmation
 #    "I understood your inbox as 4 tasks. Here's what I'll create: [...] Proceed?"
