@@ -191,6 +191,28 @@ tasks add "Write tests" --related TSK-0003 --notes "Must cover edge cases"
 - New tasks are prepended (newest at top)
 - Default source is `agent` if not specified
 
+**Tagging strategy — think multi-dimensional:**
+
+Tags are not a single category. They are **dimensions** you combine freely. A task can and should carry multiple tags that answer different questions:
+
+| Dimension | Examples |
+|---|---|
+| **Type / Kind** | `bug`, `feature`, `improvement`, `research`, `docs`, `spike`, `deliverable` |
+| **Area / Component** | `auth`, `api`, `ui`, `database`, `deployment`, `finance`, `legal` |
+| **Qualifier** | `security`, `performance`, `accessibility`, `breaking-change`, `urgent` |
+| **Process** | `needs-review`, `blocked`, `autonomous-ready`, `milestone-v2` |
+| **Project-specific** | `q2-report`, `client-alpha`, `migration` |
+
+```bash
+# Good: multiple dimensions
+tasks add "Fix race condition in auth" --tag bug --tag auth --tag security --tag autonomous-ready
+
+# Good: non-software project
+tasks add "Review Q2 contracts" --tag deliverable --tag legal --tag milestone-q2
+```
+
+> **Rule of thumb:** If a task only has one tag, you're probably under-describing it. Add at least a **type** tag and an **area** tag. The rest are context-dependent.
+
 ---
 
 ### `tasks list`
