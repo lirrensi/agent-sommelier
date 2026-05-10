@@ -344,6 +344,20 @@ class TestUpdateTask:
         assert tasks[0]["priority"] == "urgent"
         assert tasks[0]["notes"] == "original"
 
+    @pytest.mark.parametrize("status_name", [
+        "blocked", "postponed", "cancelled", "review", "waiting",
+        "parked", "deferred", "backlog", "abandoned",
+    ])
+    def test_update_to_any_new_status(self, initted: Path, status_name: str) -> None:
+        """All 9 new statuses are accepted by update_task()."""
+        add_task("Test")
+        updated = update_task("TSK-0001", status=status_name)
+        assert updated["status"] == status_name
+        assert "updated" in updated
+        # Confirm persistence
+        _, tasks = load_tasks_yaml()
+        assert tasks[0]["status"] == status_name
+
 
 class TestCompleteTask:
     """complete_task() — move a task from active to done."""
@@ -671,6 +685,30 @@ class TestCliList:
         assert len(tasks) == 1
         assert tasks[0]["id"] == "TSK-0001"
 
+    def test_list_filter_status_blocked(self, initted: Path, runner: CliRunner) -> None:
+        """Filtering by --status blocked works via the CLI."""
+        runner.invoke(main, ["add", "Active task"])
+        runner.invoke(main, ["add", "Blocked task"])
+        runner.invoke(main, ["update", "TSK-0002", "--status", "blocked"])
+        result = runner.invoke(main, ["list", "--status", "blocked", "--json"])
+        assert result.exit_code == 0
+        tasks = json.loads(result.output)
+        assert len(tasks) == 1
+        assert tasks[0]["id"] == "TSK-0002"
+        assert tasks[0]["status"] == "blocked"
+
+    def test_list_filter_status_waiting(self, initted: Path, runner: CliRunner) -> None:
+        """Filtering by --status waiting works via the CLI."""
+        runner.invoke(main, ["add", "Active task"])
+        runner.invoke(main, ["add", "Waiting task"])
+        runner.invoke(main, ["update", "TSK-0002", "--status", "waiting"])
+        result = runner.invoke(main, ["list", "--status", "waiting", "--json"])
+        assert result.exit_code == 0
+        tasks = json.loads(result.output)
+        assert len(tasks) == 1
+        assert tasks[0]["id"] == "TSK-0002"
+        assert tasks[0]["status"] == "waiting"
+
 
 class TestCliShow:
     """tasks show <ID>"""
@@ -724,11 +762,33 @@ class TestCliShow:
 class TestCliUpdate:
     """tasks update <ID>"""
 
-    def test_update_status(self, initted: Path, runner: CliRunner) -> None:
+    def test_update_status_in_progress(self, initted: Path, runner: CliRunner) -> None:
         runner.invoke(main, ["add", "Test task"])
         result = runner.invoke(main, ["update", "TSK-0001", "--status", "in-progress"])
         assert result.exit_code == 0
         assert "Updated TSK-0001" in result.output
+
+    def test_update_status_blocked(self, initted: Path, runner: CliRunner) -> None:
+        runner.invoke(main, ["add", "Blocker task"])
+        result = runner.invoke(main, ["update", "TSK-0001", "--status", "blocked"])
+        assert result.exit_code == 0
+        assert "Updated TSK-0001" in result.output
+        _, tasks = load_tasks_yaml()
+        assert tasks[0]["status"] == "blocked"
+
+    def test_update_status_postponed(self, initted: Path, runner: CliRunner) -> None:
+        runner.invoke(main, ["add", "Postponed task"])
+        result = runner.invoke(main, ["update", "TSK-0001", "--status", "postponed"])
+        assert result.exit_code == 0
+        _, tasks = load_tasks_yaml()
+        assert tasks[0]["status"] == "postponed"
+
+    def test_update_status_review(self, initted: Path, runner: CliRunner) -> None:
+        runner.invoke(main, ["add", "Review task"])
+        result = runner.invoke(main, ["update", "TSK-0001", "--status", "review"])
+        assert result.exit_code == 0
+        _, tasks = load_tasks_yaml()
+        assert tasks[0]["status"] == "review"
 
     def test_update_tags_appended(self, initted: Path, runner: CliRunner) -> None:
         runner.invoke(main, ["add", "Test task", "--tag", "ui"])

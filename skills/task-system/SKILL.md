@@ -16,7 +16,7 @@ A lightweight, **static, file-based task management system** embedded directly i
 - **Static, file-based, in-repo** — Three files in `tasks/`: `inbox.md`, `tasks.yaml`, `done.yaml`. No database, no service, no setup beyond `tasks init`.
 - **Tasks are permanent history** — Nothing is ever deleted. Tasks flow from `tasks.yaml` (active) to `done.yaml` (archive). Once a task is created, its record persists for the life of the repository.
 - **Purpose: manage project complexity** — Track what needs doing, what is in progress, what is done. Keep the agent and human aligned on priorities without losing context across sessions.
-- **Simple state machine** — `todo → in-progress → done`. That's it. Complex workflows are not the goal; clarity is.
+- **12 statuses, any lifecycle** — Tasks can hold any of 12 statuses: `todo`, `in-progress`, `done`, `blocked`, `postponed`, `cancelled`, `review`, `waiting`, `parked`, `deferred`, `backlog`, `abandoned`. You move between them freely with `tasks update --status <name>` — there are no restrictions on transitions.
 - **Counter-based IDs** — Tasks get `TSK-NNNN` IDs (e.g. `TSK-0001`). Auto-incrementing, no gaps are guaranteed (skipped IDs on concurrent writes are acceptable).
 - **Newest-first ordering** — Recent tasks appear at the top of the active list. Done tasks are oldest-first (chronological append).
 - **Growing complexity only when needed** — The system intentionally started minimal. New features are added only when a real need emerges.
@@ -44,11 +44,78 @@ The inbox is the opposite — it is explicitly a free-form scratch file. Write t
 <project-root>/
   tasks/
     inbox.md       # Raw dump zone — paste ideas, notes, scraps here
-    tasks.yaml     # Active task list (todo + in-progress)
+    tasks.yaml     # Active task list (any status except done)
     done.yaml      # Completed task archive (append-only, permanent)
 ```
 
 All files are self-documenting — open any YAML file and the header explains the system.
+
+---
+
+## Statuses
+
+Every task has a `status` field. The system accepts exactly these 12 statuses:
+
+| Status | Meaning | Typical next step |
+|--------|---------|-------------------|
+| `todo` | Needs to be done | `in-progress` |
+| `in-progress` | Being actively worked on | `done`, `blocked`, `review` |
+| `done` | Complete (moves to archive) | — |
+| `blocked` | Cannot proceed — waiting on external dependency | `waiting`, `todo` |
+| `postponed` | Pushed to later — not blocked, just delayed | `todo`, `backlog` |
+| `cancelled` | Will not be done | — |
+| `review` | Needs review or approval | `done`, `todo`, `in-progress` |
+| `waiting` | Waiting on someone else | `todo`, `review` |
+| `parked` | Set aside, may come back | `todo`, `backlog` |
+| `deferred` | Deliberately delayed to a known future time | `todo`, `in-progress` |
+| `backlog` | Lower-priority, no current intent to start | `todo`, `parked` |
+| `abandoned` | Started but permanently abandoned | — |
+
+### Moving between statuses
+
+Use `tasks update TSK-NNNN --status <name>` to change any task's status at any time:
+
+```bash
+tasks update TSK-0001 --status in-progress      # start working
+tasks update TSK-0001 --status blocked           # hit a blocker
+tasks update TSK-0001 --status waiting           # waiting on someone
+tasks update TSK-0001 --status review            # needs review
+tasks update TSK-0001 --status done              # finished (moves to archive)
+```
+
+> **`tasks done TSK-NNNN` is a shortcut** for `tasks update TSK-NNNN --status done`
+> plus moving the task from `tasks.yaml` to `done.yaml`. Use it when you are truly finishing work.
+> Use `tasks update --status done` when you want the status change **without** moving to the archive
+> (e.g. for a task that was already archived and you're noting its final status).
+
+### Status lifecycle (common patterns)
+
+```
+# Typical flow:
+  todo → in-progress → review → done
+
+# Blocked flow:
+  todo → in-progress → blocked → waiting → todo → in-progress → done
+
+# Deferred flow:
+  todo → in-progress → postponed → backlog → todo → done
+
+# Cancellation:
+  todo → in-progress → cancelled   (or abandoned)
+```
+
+Statuses are **not a fixed pipeline** — you can jump to any status from any other status.
+`tasks update --status <name>` is the single way to change it, and it works on any transition.
+
+### Filtering by status
+
+```bash
+tasks list --status todo                        # only todo tasks
+tasks list --status blocked                     # find blockers
+tasks list --status in-progress                 # what's being worked on
+tasks list --status done                        # completed in active list
+tasks next                                      # only shows "todo" tasks
+```
 
 ---
 
@@ -114,7 +181,7 @@ tasks list --json                             # JSON output for programmatic use
 **Options:**
 | Flag | Description |
 |------|-------------|
-| `--status` | Filter by status: `todo`, `in-progress`, `done` |
+| `--status` | Filter by status (12 options: `todo`, `in-progress`, `done`, `blocked`, `postponed`, `cancelled`, `review`, `waiting`, `parked`, `deferred`, `backlog`, `abandoned`) |
 | `--tag` | Filter by tag (single tag) |
 | `--priority` | Filter by priority |
 | `--source` | Filter by source |
@@ -149,22 +216,36 @@ tasks show TSK-0001
 
 ### `tasks update <TSK-NNNN>`
 
-Modify a task's fields.
+Modify a task's fields. The most common use is changing the status.
 
 ```bash
-tasks update TSK-0001 --status in-progress
+# Change status (most common operation)
+tasks update TSK-0001 --status in-progress      # start working
+tasks update TSK-0001 --status blocked           # hit a blocker
+tasks update TSK-0001 --status review            # needs review
+tasks update TSK-0001 --status postponed         # push to later
+tasks update TSK-0001 --status cancelled         # kill it
+tasks update TSK-0001 --status waiting           # waiting on someone
+tasks update TSK-0001 --status parked            # set aside
+tasks update TSK-0001 --status deferred          # delayed to known date
+tasks update TSK-0001 --status backlog           # lower priority queue
+tasks update TSK-0001 --status abandoned         # permanently dropped
+
+# Modify other fields
 tasks update TSK-0001 --priority urgent --tag needs-review
 tasks update TSK-0001 --notes "Revised approach: use OAuth2" --related TSK-0005
 ```
 
 **Options:**
-| Flag | Description |
-|------|-------------|
-| `--status` | Set status: `todo`, `in-progress`, `done` |
-| `--priority` | Set priority: `urgent`, `high`, `medium`, `low` |
-| `--tag` / `-t` | **Append** tag(s) to existing tags (repeatable) — does NOT replace |
-| `--related` | Set related task ID |
-| `--notes` | **Replace** notes (does NOT append) |
+| Flag | Shorthand | Description |
+|------|-----------|-------------|
+| `--status` | — | Change status. Any of: `todo`, `in-progress`, `done`, `blocked`, `postponed`, `cancelled`, `review`, `waiting`, `parked`, `deferred`, `backlog`, `abandoned` |
+| `--priority` | `-p` | Change priority: `urgent`, `high`, `medium`, `low` |
+| `--tag` | `-t` | **Append** tag(s) to existing tags (repeatable) — does NOT replace |
+| `--related` | `-r` | Set related task ID |
+| `--notes` | `-n` | **Replace** notes (does NOT append) |
+
+> **Tip:** Status is the most fluid field in the system. Change it freely as the task moves through your workflow. There is no pipeline — any status to any status is allowed.
 
 ---
 
@@ -182,6 +263,12 @@ tasks done TSK-0001 --note "All tests passing, deployed to staging"
 - Task is removed from `tasks.yaml` and appended to `done.yaml`
 - **Error if task already done**: "Task already done: TSK-NNNN"
 - **Error if task not found**: "Task not found: TSK-NNNN"
+
+> **`tasks done` vs `tasks update --status done`:**  
+> `tasks done` moves the task to the archive (`done.yaml`).  
+> `tasks update --status done` only changes the status field — the task stays in `tasks.yaml`.
+> Use `tasks done` for truly finished work. Use `update --status done` only if the task is
+> already in the archive and you are correcting its recorded final status.
 
 ---
 
@@ -220,10 +307,13 @@ tasks status --json       # JSON for programmatic use
 
 **Sample output:**
 ```
-Tasks: 1 in-progress, 4 todo
+Tasks: 1 in-progress, 3 todo, 1 blocked, 2 postponed
 
 IN PROGRESS
   [TSK-0001] high    Refactor auth middleware  tags: refactor, auth
+
+BLOCKED
+  [TSK-0004] high    Deploy to production      tags: devops
 
 TOP PRIORITY
   [TSK-0002] urgent  Fix login vulnerability   tags: bug, security
@@ -332,12 +422,48 @@ tasks add "Deploy to production" --related TSK-0007 --priority urgent
 # Start working
 tasks update TSK-0004 --status in-progress
 
-# Something came up — note it and change priority
+# Hit a blocker — mark it
+tasks update TSK-0004 --status blocked --notes "Waiting on API key from IT"
+# Later: unblocked
+tasks update TSK-0004 --status in-progress
+
+# Needs review before shipping
+tasks update TSK-0004 --status review
+
+# Priority changed — push it to later
+tasks update TSK-0004 --status postponed --priority low
+
+# Put it in the backlog for future triage
+tasks update TSK-0004 --status backlog
+
+# Something came up — change priority, add context
 tasks update TSK-0004 --priority urgent --notes "Client escalation, needs immediate attention"
 
-# Done
+# Cancelled — no longer relevant
+tasks update TSK-0004 --status cancelled --notes "Requirement dropped"
+
+# Truly done
 tasks done TSK-0004 --note "Deployed to prod, monitors green"
 ```
+
+### Moving Between Statuses
+
+There are no restrictions on status transitions. You can move a task from any status to any other:
+
+```bash
+# Direct skip: backlog → done
+tasks update TSK-0010 --status done
+
+# Backwards: review → todo (more work needed)
+tasks update TSK-0011 --status todo --notes "Review found issues, needs rework"
+
+# Dead end: in-progress → abandoned
+tasks update TSK-0012 --status abandoned --notes "Proof of concept failed"
+```
+
+The only special status is `done` — use `tasks done TSK-NNNN` to move it to the archive.
+Use `tasks update TSK-NNNN --status done` only when the task is already in the archive
+and you are backdating or correcting its recorded status.
 
 ### Reviewing
 
@@ -367,9 +493,12 @@ Use the task system **proactively** — not just when asked. Good triggers:
   ```bash
   tasks done TSK-0005 --note "Found: missing index on user_id. Added migration."
   ```
-- **When context shifts**: Update the task — change priority, add tags, append context:
+- **When context shifts**: Update the task — change status, priority, add tags, append context:
   ```bash
+  tasks update TSK-0002 --status blocked --notes "Waiting on IT for API key"
+  tasks update TSK-0002 --status in-progress       # unblocked
   tasks update TSK-0002 --priority urgent --tag security
+  tasks update TSK-0002 --status postponed          # pushed to later
   ```
 - **When priorities need review**: Run `tasks next --take all` to see the full queue sorted by priority.
 - **When the inbox has items**: Check `tasks status` — if inbox count > 0, read and promote:

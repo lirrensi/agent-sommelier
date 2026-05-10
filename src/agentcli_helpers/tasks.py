@@ -1,5 +1,8 @@
 """Task management CLI for AI agents.
 
+Statuses: todo, in-progress, done, blocked, postponed, cancelled,
+          review, waiting, parked, deferred, backlog, abandoned
+
 Usage:
     tasks init              # Bootstrap task files
     tasks next              # Show highest-priority todo
@@ -35,7 +38,13 @@ INBOX_FILE_NAME = "inbox.md"
 TASKS_FILE_NAME = "tasks.yaml"
 DONE_FILE_NAME = "done.yaml"
 
-VALID_STATUSES = {"todo", "in-progress", "done"}
+VALID_STATUSES = {
+    "todo", "in-progress", "done",           # core lifecycle
+    "blocked", "postponed", "cancelled",      # deferral / termination
+    "review", "waiting",                      # handoff / gate
+    "parked", "deferred", "backlog",           # triage / queue
+    "abandoned",                               # dead end
+}
 VALID_PRIORITIES = {"urgent", "high", "medium", "low"}
 VALID_SOURCES = {"inbox", "audit", "test", "jira", "agent", "idea"}
 
@@ -68,7 +77,8 @@ TASKS_HEADER = """\
 #   tasks inbox             Print inbox.md
 #   tasks --help            Full documentation
 #
-# Status:  todo -> in-progress -> done
+# Statuses:  todo -> in-progress -> done  |  blocked, postponed, cancelled
+#            review, waiting, parked, deferred, backlog, abandoned
 # Priority:  urgent > high > medium > low
 # Newest at top, oldest at bottom.
 # ======================================================================
