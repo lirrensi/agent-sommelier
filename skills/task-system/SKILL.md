@@ -31,10 +31,10 @@ A lightweight, **static, file-based task management system** embedded directly i
 
 The two YAML files are machine-managed. Editing them by hand will result in overwritten changes the next time a CLI command runs. **Always use the CLI to create, update, or complete tasks.**
 
-The inbox is the opposite — it is explicitly a free-form scratch file. Write to it, paste into it, reorganize it, clean it up. The typical flow is:
+The inbox is the opposite — it is explicitly a free-form scratch file. Write to it, paste into it, dump ideas. The typical flow is:
 1. Someone dumps raw ideas, notes, or scraps into `inbox.md`
 2. An agent reads the inbox, translates each actionable item into a proper task via `tasks add "..." --source inbox`
-3. Once processed, the inbox is cleaned up (emptied or annotated)
+3. Once processed, the inbox is wiped clean — left completely empty for the next round
 
 ---
 
@@ -398,11 +398,12 @@ tasks inbox | wc -l            # Count inbox lines (or use `tasks status`)
 - Writing quick notes without worrying about structure
 
 **Typical inbox workflow:**
-1. Read the inbox: `tasks inbox`
-2. Translate each actionable item into a proper task: `tasks add "..." --source inbox --tags ...`
-3. Clean up the processed entries (edit `tasks/inbox.md` directly, clear out what's been handled)
+1. Read the inbox: `tasks inbox` (or open `tasks/inbox.md` directly)
+2. Process **every** actionable item — format each into a proper task with `tasks add "..." --source inbox --tags ...`
+3. Show the user the full list of tasks you're about to create — **get explicit confirmation** before proceeding
+4. Only after confirmation, wipe `tasks/inbox.md` completely — leave it empty so it starts fresh for new ideas
 
-The inbox is the input funnel. Tasks are the structured output.
+The inbox is the input funnel. Tasks are the structured output. **Never leave old scraps behind.**
 
 ---
 
@@ -431,19 +432,30 @@ tasks next
 
 ### Inbox Processing
 
-The most common multi-step operation. Turn raw notes into structured tasks:
+The most common multi-step operation. Turn raw notes into structured tasks, then leave the inbox empty:
 
 ```bash
-# 1. Read what's in the inbox
+# 1. Read everything in the inbox — don't skip items
 tasks inbox
 
-# 2. Promote each actionable item to a proper task
+# 2. Draft tasks for every actionable item
 tasks add "Fix login timeout on mobile" --source inbox --priority high --tag bug
 tasks add "Update README with API examples" --source inbox --priority low --tag docs
 
-# 3. Clear processed entries from the inbox file
-#    (edit tasks/inbox.md directly — remove or mark what's been handled)
+# 3. Confirm with the user before finalizing
+#    Show the full list: "I'll create these X tasks. Proceed?"
+
+# 4. Clear the inbox completely — leave it empty
+echo. > tasks/inbox.md          # Windows: wipe file to blank
+# > tasks/inbox.md              # Unix: wipe file to blank
 ```
+
+**Rules for clearing:**
+- Take **all** items, not just the easy ones
+- Always **get confirmation** before creating tasks and wiping the file
+- After processing, the inbox must be **empty** — not partially cleaned, not annotated, not "organized." Empty.
+
+> **Default behavior:** Wipe the inbox clean after processing. Only skip wiping if the user explicitly says to keep it (e.g. "don't clear it yet" or "leave the unprocessed ones"). When in doubt, empty it.
 
 ### Creating Work
 
@@ -545,9 +557,9 @@ Use the task system **proactively** — not just when asked. Good triggers:
 - **When priorities need review**: Run `tasks next --take all` to see the full queue sorted by priority.
 - **When the inbox has items**: Check `tasks status` — if inbox count > 0, read and promote:
   ```bash
-  tasks inbox                             # read raw entries
-  tasks add "..." --source inbox          # promote each actionable item
-  # Then clean up tasks/inbox.md directly (remove processed entries)
+  tasks inbox                             # read ALL raw entries
+  tasks add "..." --source inbox          # draft tasks for every actionable item
+  # Confirm with user, then wipe tasks/inbox.md completely (empty file)
   ```
 - **Before significant changes**: Check `tasks list --status in-progress` to know what's actively being worked on.
 
