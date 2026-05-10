@@ -184,12 +184,14 @@ tasks add "Write tests" --related TSK-0003 --notes "Must cover edge cases"
 | `--priority` | `-p` | Priority: `urgent`, `high`, `medium`, `low` |
 | `--source` | `-s` | Source: `inbox`, `audit`, `test`, `jira`, `agent`, `idea` (default: `agent`) |
 | `--related` | `-r` | Related task ID (e.g. `TSK-0042`) |
-| `--notes` | `-n` | Freeform notes |
+| `--notes` | `-n` | Freeform notes (appendable array — see below) |
+| `--definition-of-done` | `-d` | Optional: what "done" looks like for this task |
 
 **Notes:**
 - Tags are normalized to lowercase, whitespace becomes hyphens
 - New tasks are prepended (newest at top)
 - Default source is `agent` if not specified
+- `definition_of_done` is optional — use it when the title alone isn't enough to know when the task is finished. If you can't write a clear `definition_of_done`, ask clarifying questions before creating the task.
 
 ---
 
@@ -273,10 +275,26 @@ tasks update TSK-0001 --notes "Revised approach: use OAuth2" --related TSK-0005
 | `--priority` | `-p` | Change priority: `urgent`, `high`, `medium`, `low` |
 | `--tag` | `-t` | **Append** tag(s) to existing tags (repeatable) — does NOT replace |
 | `--related` | `-r` | Set related task ID |
-| `--notes` | `-n` | **Replace** notes (does NOT append) |
+| `--notes` | `-n` | **Append** a note to the existing notes array |
+| `--replace-notes` | — | **Replace** all notes (use sparingly) |
 | `--closed` | `-c` | Close the task (move to `closed.yaml`) — can be combined with `--status` |
 
 > **Tip:** Status is the most fluid field in the system. Change it freely as the task moves through your workflow. There is no pipeline — any status to any status is allowed.
+
+#### Notes as an appendable array
+
+The `notes` field is an **array of strings**, not a single text block. Every `--notes` update appends a new entry:
+
+```bash
+tasks update TSK-0001 --notes "Started investigation"      # appends entry 1
+tasks update TSK-0001 --notes "Found root cause: race condition"  # appends entry 2
+tasks show TSK-0001                                       # shows all entries
+```
+
+- Use `--notes` to **append** context, blockers, decisions, and progress
+- Use `--replace-notes` only when you need to overwrite the entire array (rare)
+- This turns `notes` into a **coordination log** — a running history of everything that happened on the task
+- Backwards compatibility: existing string-style notes are automatically converted to a single-element array on the next update
 
 ---
 
@@ -418,6 +436,19 @@ tasks <command> --help         # Help for a specific command
 
 ---
 
+### `tasks search` (planned)
+
+Full-text search across all task fields — titles, notes, `definition_of_done`, tags, and context.
+
+```bash
+tasks search "auth"                     # any mention of "auth"
+tasks search "status:todo AND tag:bug"  # simple query DSL
+```
+
+> **Status:** Not yet implemented. See `TSK-0043` in this repository.
+
+---
+
 ## How to Operate
 
 ### Starting a Session
@@ -432,28 +463,35 @@ tasks next
 
 ### Inbox Processing
 
-The most common multi-step operation. Turn raw notes into structured tasks, then leave the inbox empty:
+The most important multi-step operation. Turn raw notes into structured tasks, then leave the inbox empty. This is the **ingress pipeline** — the gateway where vague ideas become delegatable work.
 
 ```bash
 # 1. Read everything in the inbox — don't skip items
 tasks inbox
 
 # 2. Draft tasks for every actionable item
-tasks add "Fix login timeout on mobile" --source inbox --priority high --tag bug
-tasks add "Update README with API examples" --source inbox --priority low --tag docs
+#    For each item, ask: "Is this clear enough to execute without further input?"
+#    If unclear → ask the user clarifying questions BEFORE creating the task
+#    If clear  → draft with title, notes, definition_of_done, priority, tags
 
-# 3. Confirm with the user before finalizing
-#    Show the full list: "I'll create these X tasks. Proceed?"
+tasks add "Fix login timeout on mobile" --source inbox --priority high --tag bug --definition-of-done "Login page loads in <2s on iOS Safari and Android Chrome"
+tasks add "Update README with API examples" --source inbox --priority low --tag docs --definition-of-done "README contains curl examples for all 5 endpoints"
+
+# 3. Present the draft tasks to the user for confirmation
+#    "I understood your inbox as 4 tasks. Here's what I'll create: [...] Proceed?"
+#    Only create tasks after explicit confirmation.
 
 # 4. Clear the inbox completely — leave it empty
 echo. > tasks/inbox.md          # Windows: wipe file to blank
 # > tasks/inbox.md              # Unix: wipe file to blank
 ```
 
-**Rules for clearing:**
-- Take **all** items, not just the easy ones
-- Always **get confirmation** before creating tasks and wiping the file
+**Ingress Rules:**
+- **Take ALL items**, not just the easy ones
+- **Ask clarifying questions** when an item is vague, ambiguous, or missing context. The goal is to make tasks as complete as possible — but if the user chooses not to answer or hasn't thought it through yet, create the task anyway with whatever context is available. The user owns the task; the agent is not a gatekeeper.
+- **Get confirmation** before creating tasks and wiping the file
 - After processing, the inbox must be **empty** — not partially cleaned, not annotated, not "organized." Empty.
+- If an item is unclear and the user is unavailable, **leave it in the inbox** and process what you can
 
 > **Default behavior:** Wipe the inbox clean after processing. Only skip wiping if the user explicitly says to keep it (e.g. "don't clear it yet" or "leave the unprocessed ones"). When in doubt, empty it.
 
@@ -593,3 +631,12 @@ Use the task system **proactively** — not just when asked. Good triggers:
 - Runtime tools (like `crony`, `bg-jobs`, or any ephemeral scheduler) are **per-session** — they track what's happening right now.
 - This task system is **cross-session** and **permanent** — it tracks what needs doing and what was done over the life of the project.
 - They complement each other: use runtime tools for immediate execution, use this task system for project-level planning and history.
+
+### Execution strategy
+
+Tasks run **sequentially by default**. The orchestrator may run tasks in parallel when they have no conflicts (touch different files, different subsystems). When conflicts are detected, the orchestrator can either:
+
+1. Run them sequentially in dependency order
+2. Isolate them in **separate git worktrees** to allow safe parallel execution
+
+This decision is made at execution time — the task system itself does not enforce ordering. The batch executor or orchestrator analyzes the task set and picks the safest strategy.
