@@ -246,7 +246,7 @@ class TestAddTask:
             priority="high",
             source="jira",
             related="TSK-0000",
-            notes="Some notes",
+            notes=["Some notes"],
         )
         assert task["tags"] == ["bug", "ui"]
         assert "created" in task
@@ -323,11 +323,11 @@ class TestUpdateTask:
         updated = update_task("TSK-0002", related="TSK-0001")
         assert updated["related"] == "TSK-0001"
 
-    def test_update_notes_replaces(self, initted: Path) -> None:
-        """Notes field is replaced, not appended (unlike close --note)."""
+    def test_update_notes_appends(self, initted: Path) -> None:
+        """Notes append by default, matching the CLI help text."""
         add_task("Test", notes="original")
         updated = update_task("TSK-0001", notes="replaced")
-        assert updated["notes"] == "replaced"
+        assert updated["notes"] == ["original", "replaced"]
 
     def test_update_not_found(self, initted: Path) -> None:
         with pytest.raises(ValueError, match="Task not found: TSK-9999"):
@@ -346,7 +346,7 @@ class TestUpdateTask:
         update_task("TSK-0001", priority="urgent")
         _, tasks = load_tasks_yaml()
         assert tasks[0]["priority"] == "urgent"
-        assert tasks[0]["notes"] == "original"
+        assert tasks[0]["notes"] == ["original"]
 
     @pytest.mark.parametrize("status_name", [
         "blocked", "postponed", "cancelled", "review", "waiting",
@@ -399,7 +399,7 @@ class TestCloseTask:
     def test_close_without_existing_notes(self, initted: Path) -> None:
         add_task("No notes")
         closed = close_task("TSK-0001", note="only this")
-        assert closed["notes"] == "only this"
+        assert closed["notes"] == ["only this"]
 
     def test_close_preserves_other_tasks(self, initted: Path) -> None:
         add_task("Keep me")
@@ -886,6 +886,14 @@ class TestCliNext:
         assert result.exit_code == 0
         assert "Urgent task" in result.output
         assert "Low priority" not in result.output
+
+    def test_next_filters_by_tag(self, initted: Path, runner: CliRunner) -> None:
+        runner.invoke(main, ["add", "Bug task", "--tag", "bug"])
+        runner.invoke(main, ["add", "Docs task", "--tag", "docs"])
+        result = runner.invoke(main, ["next", "--tag", "bug", "--take", "all"])
+        assert result.exit_code == 0
+        assert "Bug task" in result.output
+        assert "Docs task" not in result.output
 
     def test_next_priority_order(self, initted: Path, runner: CliRunner) -> None:
         runner.invoke(main, ["add", "Low", "--priority", "low"])

@@ -509,7 +509,8 @@ def close_task(task_id: str, note: str | None = None) -> dict[str, Any]:
 
 
 def filter_tasks(tasks: list[dict[str, Any]], status: str | None = None,
-                 tags: list[str] | None = None, priority: str | None = None,
+                 tags: list[str] | None = None, tag: str | None = None,
+                 priority: str | None = None,
                  source: str | None = None, related: str | None = None) -> list[dict[str, Any]]:
     """Filter a task list by status, tags, priority, source, and/or related. All filters ANDed.
 
@@ -522,6 +523,8 @@ def filter_tasks(tasks: list[dict[str, Any]], status: str | None = None,
         result = [t for t in result if t.get("priority") == priority]
     if source:
         result = [t for t in result if t.get("source") == source]
+    if tag:
+        tags = (tags or []) + [tag]
     if tags:
         for tag in tags:
             result = [t for t in result if tag in (t.get("tags") or [])]
@@ -814,7 +817,11 @@ def next_cmd(take: str, tag: str | None, priority: str | None, skip_related: boo
     candidates = [t for t in tasks if t.get("status") == "todo"]
     # Exclude closed tasks
     candidates = [t for t in candidates if not t.get("closed", False)]
-    candidates = filter_tasks(candidates, tag=tag, priority=priority)
+    candidates = filter_tasks(
+        candidates,
+        tags=[tag] if tag else None,
+        priority=priority,
+    )
 
     # --skip-related: exclude tasks with unresolved related
     if skip_related:
