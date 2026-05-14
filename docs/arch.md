@@ -267,7 +267,7 @@ crony = "agentcli_helpers.crony:main"
 ```
 
 ### Commands
-- `crony add NAME SCHEDULE "CMD"` — Add job
+- `crony add NAME SCHEDULE "CMD" [--cron]` — Add job (with optional raw cron expression flag)
 - `crony list` — List jobs
 - `crony rm NAME` — Remove job
 - `crony run NAME` — Run immediately
@@ -275,7 +275,7 @@ crony = "agentcli_helpers.crony:main"
 
 ### Job Data Model
 
-Stored jobs preserve the schedule definition (`type`, `schedule` or `interval`, `cron_expr` when applicable) plus execution metadata such as `created_at`.
+Stored jobs preserve the schedule definition (`type`, `schedule` or `interval`, `cron_expr` when applicable) plus execution metadata such as `created_at` and `cwd` (the working directory at add time).
 
 For display and automation, list responses MUST enrich each job with a `next_run` value when derivable:
 - One-off jobs use the stored scheduled timestamp
@@ -285,9 +285,11 @@ For display and automation, list responses MUST enrich each job with a `next_run
 
 ```
 ~/.crony/
-├── jobs.json    # {"job_name": {...}}
-└── logs/
-    └── {name}.log
+├── jobs.json       # {"job_name": {...}}
+├── logs/
+│   └── {name}.log
+└── scripts/        # Windows .bat wrappers for CWD preservation
+    └── {name}.bat
 ```
 
 ### Schedule Parsing
@@ -310,6 +312,8 @@ parse_schedule(schedule_str) -> dict
             +-- return {"type": "once", "schedule", "next_run"}
 ```
 
+When `--cron` is passed on the CLI, `add_job()` bypasses `parse_schedule()` entirely and constructs a recurring job dict directly with the raw cron expression as `interval` and `cron_expr`. This allows users to specify any valid 5-field cron expression instead of being limited to the natural language grammar.
+
 ### Interval to Cron Mapping
 
 | Input | Cron Output |
@@ -328,11 +332,13 @@ parse_schedule(schedule_str) -> dict
 ```
 register_job_crontab(job)
     |
+    +-- if cwd present: cmd = f"cd {shlex.quote(cwd)} && {cmd}"
+    |
     +-- subprocess.run(["crontab", "-l"]) --> current crontab
     |
     +-- remove lines containing "CRONY:{name}"
     |
-    +-- append "{cron_expr} {cmd}  # CRONY:{name}"
+    +-- append "{cron_expr} {wrapped_cmd}  # CRONY:{name}"
     |
     +-- subprocess.run(["crontab", "-"], input=new_cron)
 ```
@@ -340,6 +346,11 @@ register_job_crontab(job)
 **Windows (Task Scheduler):**
 ```
 register_job_task_scheduler(job)
+    |
+    +-- if cwd present:
+    |       |
+    |       +-- write ~/.crony/scripts/{name}.bat (cd /d "CWD" && CMD)
+    |       +-- cmd = str(bat_path)
     |
     +-- schtasks /Delete /TN CRONY_{name} /F  # Remove existing
     |
@@ -351,6 +362,8 @@ register_job_task_scheduler(job)
             |
             +-- schtasks /Create /TN CRONY_{name} /TR {cmd} /SC ONCE /ST {time} /SD {date}
 ```
+
+When jobs are removed via `unregister_job()`, the `.bat` wrapper at `~/.crony/scripts/{name}.bat` is also deleted on Windows.
 
 ### Sync Mechanism
 

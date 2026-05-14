@@ -2,6 +2,7 @@
 
 Usage:
     crony add <name> <schedule> <command>
+    crony add <name> "<cron_expr>" <command> --cron
     crony list
     crony rm <name>
     crony run <name>
@@ -12,11 +13,16 @@ Schedule formats (natural language):
     at 15:30, at "2026-03-10 10:00"
     every 1h, every 30m, every 24h
     every monday, every weekday
+
+Raw cron expression (with --cron):
+    */5 * * * *    Every 5 minutes
+    0 2 * * *      Daily at 2 AM
 """
 
 import os
 import sys
 import json
+import shlex
 import subprocess
 import platform
 from pathlib import Path
@@ -241,19 +247,34 @@ def interval_to_cron(interval: str) -> str:
     return interval
 
 
-def add_job(name: str, schedule: str, cmd: str) -> dict:
+def add_job(name: str, schedule: str, cmd: str, cron_expr: str | None = None) -> dict:
     """Add a new cron job."""
     jobs = load_jobs()
 
     if name in jobs:
         raise ValueError(f"Job '{name}' already exists. Use 'crony rm {name}' first.")
 
-    parsed = parse_schedule(schedule)
+    if cron_expr:
+        # Validate: 5 space-separated fields
+        fields = cron_expr.strip().split()
+        if len(fields) != 5:
+            raise ValueError(
+                f"Invalid cron expression: {cron_expr!r}. Expected 5 space-separated fields."
+            )
+        parsed = {
+            "type": "recurring",
+            "interval": cron_expr,
+            "cron_expr": cron_expr,
+            "next_run": None,
+        }
+    else:
+        parsed = parse_schedule(schedule)
 
     job = {
         "name": name,
         "cmd": cmd,
         "created_at": datetime.now().isoformat(),
+        "cwd": os.getcwd(),
         **parsed,
     }
 
@@ -283,6 +304,11 @@ def register_job_crontab(job: dict):
     name = job["name"]
     cmd = job["cmd"]
     cron_expr = job.get("cron_expr", "")
+
+    # Wrap command to cd into job's working directory
+    cwd = job.get("cwd", "")
+    if cwd:
+        cmd = f"cd {shlex.quote(cwd)} && {cmd}"
 
     if not cron_expr:
         # One-off job - use at command instead
@@ -325,6 +351,16 @@ def register_job_task_scheduler(job: dict):
     name = job["name"]
     cmd = job["cmd"]
     cron_expr = job.get("cron_expr", "")
+
+    # Wrap command to cd into job's working directory via .bat wrapper
+    cwd = job.get("cwd", "")
+    if cwd:
+        scripts_dir = CRONY_DIR / "scripts"
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        bat_path = scripts_dir / f"{name}.bat"
+        bat_content = f"@echo off\ncd /d \"{cwd}\"\n{cmd}\n"
+        bat_path.write_text(bat_content)
+        cmd = str(bat_path)
 
     # Create a scheduled task
     # For simplicity, we'll create a basic task
@@ -422,6 +458,11 @@ def unregister_job(job: dict):
         subprocess.run(
             ["schtasks", "/Delete", "/TN", task_name, "/F"], capture_output=True
         )
+
+        # Clean up Windows batch wrapper
+        bat_path = CRONY_DIR / "scripts" / f"{name}.bat"
+        if bat_path.exists():
+            bat_path.unlink()
 
 
 def run_job(name: str) -> bool:
@@ -548,12 +589,14 @@ def main():
 @click.argument("name")
 @click.argument("schedule")
 @click.argument("cmd")
-def add(name: str, schedule: str, cmd: str):
+@click.option("--cron", is_flag=True, help="Treat schedule as a raw cron expression (5 fields)")
+def add(name: str, schedule: str, cmd: str, cron: bool):
     """Add a new cron job.
 
     NAME: Job name (unique identifier)
 
     SCHEDULE: Natural language schedule (e.g., "in 5m", "every 1h", "at 15:30")
+             or a raw cron expression when --cron is used (e.g., "*/5 * * * *")
 
     CMD: Command to run
 
@@ -561,13 +604,19 @@ def add(name: str, schedule: str, cmd: str):
         crony add ping "every 1h" "curl http://api/ping"
         crony add backup "at 15:30" "backup.sh"
         crony add report "every monday" "weekly-report.sh"
+        crony add nightly "0 2 * * *" "backup.sh" --cron
     """
     try:
-        job = add_job(name, schedule, cmd)
-        click.echo(f"Added job: {name}")
-        click.echo(f"  Schedule: {schedule} ({job['type']})")
-        if job.get("cron_expr"):
-            click.echo(f"  Cron: {job['cron_expr']}")
+        if cron:
+            job = add_job(name, schedule, cmd, cron_expr=schedule)
+            click.echo(f"Added job: {name}")
+            click.echo(f"  Schedule: {schedule} (recurring, raw cron)")
+        else:
+            job = add_job(name, schedule, cmd)
+            click.echo(f"Added job: {name}")
+            click.echo(f"  Schedule: {schedule} ({job['type']})")
+            if job.get("cron_expr"):
+                click.echo(f"  Cron: {job['cron_expr']}")
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)

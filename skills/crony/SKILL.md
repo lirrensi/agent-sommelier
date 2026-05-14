@@ -27,7 +27,18 @@ uv tool install agentcli-helpers
 ### Add a Job
 ```bash
 crony add <name> <schedule> <command>
+crony add <name> "<cron_expr>" <command> --cron
 ```
+
+The `--cron` flag treats the schedule as a raw 5-field cron expression instead of natural language:
+
+```bash
+crony add myjob "*/5 * * * *" "python script.py" --cron
+crony add nightly "0 2 * * *" "backup.sh" --cron
+```
+
+**Working directory preservation:** When a job is added, crony automatically captures the current working directory. When the OS scheduler runs the job, it `cd`s to that directory first, so relative paths in commands work correctly regardless of where the scheduler executes.
+You can still manually add `cd` anyway: `cd /path/to && command.py`
 
 ### List Jobs
 ```bash
@@ -68,6 +79,10 @@ crony add ping "every 1h" "python --version"
 crony add cleanup "every 24h" "python cleanup.py"
 crony add weekly "every monday" "python weekly_report.py"
 crony add weekday "every weekday" "python daily_check.py"
+
+# Raw cron expression (bypasses natural language parser)
+crony add nightly "0 2 * * *" "backup.sh" --cron
+crony add every-5min "*/5 * * * *" "python check.py" --cron
 ```
 
 ### Interval Syntax
@@ -99,7 +114,9 @@ crony list --json
 ## Platform Support
 
 Jobs are registered with the native OS scheduler:
-- **Linux/macOS**: Uses `crontab`
-- **Windows**: Uses Task Scheduler
+- **Linux/macOS**: Uses `crontab` — wraps command with `cd /path && cmd` via `shlex.quote()`
+- **Windows**: Uses Task Scheduler — writes a `.bat` wrapper in `~/.crony/scripts/` with `cd /d "CWD"`
+
+The working directory is captured at `add` time and stored in the `cwd` field of `~/.crony/jobs.json` so relative paths in commands work reliably.
 
 Job metadata is stored in `~/.crony/jobs.json` for easy management.

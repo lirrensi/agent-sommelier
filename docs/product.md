@@ -248,14 +248,17 @@ Natural language cron job scheduler with OS-level integration.
 
 ### Commands
 
-#### `crony add NAME SCHEDULE "CMD"`
+#### `crony add NAME SCHEDULE "CMD" [--cron]`
 
 Add a new cron job.
 
 **Arguments:**
 - `NAME` — Unique job name (identifier)
-- `SCHEDULE` — Natural language schedule (see below)
+- `SCHEDULE` — Natural language schedule (see below), or a raw cron expression when `--cron` is used
 - `CMD` — Command to execute
+
+**Options:**
+- `--cron` — Treat SCHEDULE as a raw cron expression instead of natural language (5 space-separated fields)
 
 **Schedule formats:**
 
@@ -265,12 +268,25 @@ Add a new cron job.
 | Time | `at 15:30`, `at "2026-03-10 10:00"` | One-off at specific time |
 | Interval | `every 1h`, `every 30m`, `every 24h` | Recurring |
 | Day | `every monday`, `every weekday`, `every weekend` | Weekly or daily |
+| Raw cron | `*/5 * * * *` (with `--cron`) | Recurring, bypasses natural language parser |
 
-**Output:**
+**Output (natural language):**
 ```
 Added job: health-check
   Schedule: every 1h (recurring)
   Cron: 0 * * * *
+```
+
+**Output (with `--cron`):**
+```
+Added job: nightly
+  Schedule: 0 2 * * * (recurring, raw cron)
+```
+
+**Examples with `--cron`:**
+```bash
+crony add myjob "*/5 * * * *" "python script.py" --cron
+crony add nightly "0 2 * * *" "backup.sh" --cron
 ```
 
 #### `crony list [--json] [--sync]`
@@ -347,6 +363,10 @@ View job logs.
 - Missing optional dependencies: error with install hint
 - OS scheduler unavailable: error, but job saved to index
 - One-off jobs: stored in index but not added to recurring scheduler
+- **Working directory:** When a job is added, crony captures the current working directory.
+  When the OS scheduler runs the job, it first `cd`s to that directory, so relative paths work.
+  On Unix, this uses `shlex.quote()` for safe path handling. On Windows, a `.bat` wrapper script
+  is created in `~/.crony/scripts/` with proper quoting.
 
 ---
 
