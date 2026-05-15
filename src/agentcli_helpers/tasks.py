@@ -3,6 +3,9 @@
 Statuses: todo, in-progress, done, blocked, postponed, cancelled,
           review, waiting, parked, deferred, backlog, abandoned
 
+Priorities: p0 (critical) > p1 > p2 > p3 > p4 (backlog)
+Deps: blocks, parent, child, discovered, relates
+
 Usage:
     tasks init              # Bootstrap task files
     tasks next              # Show highest-priority todo
@@ -12,9 +15,12 @@ Usage:
     tasks status            # Session overview
     tasks add "Title"       # Create a task
     tasks update TSK-0001   # Modify a task
-    tasks close TSK-0001     # Close a task (any status)
+    tasks close TSK-0001    # Close a task (any status)
     tasks inbox             # Print inbox contents
     tasks search <text>     # Full-text search across all tasks
+    tasks deps TSK-0001     # Show dependency graph
+    tasks ready             # Top-priority unblocked todos
+    tasks blocked           # Show blocked tasks with blockers
 """
 
 from __future__ import annotations
@@ -46,10 +52,17 @@ VALID_STATUSES = {
     "parked", "deferred", "backlog",           # triage / queue
     "abandoned",                               # dead end
 }
-VALID_PRIORITIES = {"urgent", "high", "medium", "low"}
+VALID_PRIORITIES = {0, 1, 2, 3, 4}
 VALID_SOURCES = {"inbox", "audit", "test", "jira", "agent", "idea"}
 
-PRIORITY_ORDER = {"urgent": 0, "high": 1, "medium": 2, "low": 3}
+VALID_DEP_TYPES = {"blocks", "parent", "child", "discovered", "relates"}
+
+PRIORITY_ORDER = {0: 0, 1: 1, 2: 2, 3: 3, 4: 4}
+PRIORITY_LABELS = {0: "p0", 1: "p1", 2: "p2", 3: "p3", 4: "p4"}
+# Map old named priorities to numeric for backwards compat
+_NAMED_PRIORITY_MAP = {"urgent": 0, "high": 1, "medium": 2, "low": 3}
+# Reverse map for CLI convenience aliases
+_PRIORITY_ALIASES = {"critical": 0, "urgent": 0, "high": 1, "medium": 2, "low": 3, "backlog": 4}
 
 # ---------------------------------------------------------------------------
 # File headers — written to the top of each YAML file when saved
@@ -82,7 +95,7 @@ TASKS_HEADER = """\
 # Statuses:  todo, in-progress, done, blocked, postponed, cancelled,
 #            review, waiting, parked, deferred, backlog, abandoned
 # Closed:    tasks close TSK-NNNN  or  tasks update --closed
-# Priority:  urgent > high > medium > low
+# Priority:  p0 (critical) > p1 > p2 > p3 > p4 (backlog)
 # Newest at top, oldest at bottom.
 # ======================================================================
 
@@ -131,12 +144,27 @@ def _inbox_file() -> Path:
 # ---------------------------------------------------------------------------
 
 
+def _migrate_task(task: dict[str, Any]) -> dict[str, Any]:
+    """Apply all migrations to a single task dict. Mutates and returns it."""
+    return _ensure_deps_normalized(task)
+
+
+def _migrate_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Apply all migrations to every task in a list."""
+    for t in tasks:
+        _migrate_task(t)
+    return tasks
+
+
 def load_tasks_yaml() -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Load tasks.yaml. Returns (meta, tasks_list).
 
     If file does not exist, raises FileNotFoundError.
     If YAML is malformed, raises yaml.YAMLError.
     If file exists but is empty or has unexpected structure, returns defaults.
+
+    Auto-migrates legacy 'related' fields to 'deps' list and named priorities
+    to numeric on load.
     """
     path = _tasks_file()
     if not path.exists():
@@ -149,6 +177,7 @@ def load_tasks_yaml() -> tuple[dict[str, Any], list[dict[str, Any]]]:
     tasks = raw.get("tasks", [])
     if not isinstance(tasks, list):
         tasks = []
+    _migrate_tasks(tasks)
     return meta, tasks
 
 
@@ -172,6 +201,8 @@ def load_closed_yaml() -> list[dict[str, Any]]:
     Handles the {meta, tasks} format.
     Falls back to legacy done.yaml if closed.yaml doesn't exist.
     Returns [] if neither file exists.
+
+    Auto-migrates legacy fields on load.
     """
     path = _resolve_tasks_dir() / CLOSED_FILE_NAME
     if not path.exists():
@@ -179,13 +210,19 @@ def load_closed_yaml() -> list[dict[str, Any]]:
         if old_path.exists():
             raw = yaml.safe_load(old_path.read_text(encoding="utf-8")) or []
             if isinstance(raw, dict):
-                return raw.get("tasks", [])
-            return raw if isinstance(raw, list) else []
+                tasks = raw.get("tasks", [])
+            else:
+                tasks = raw if isinstance(raw, list) else []
+            _migrate_tasks(tasks)
+            return tasks
         return []
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or []
     if isinstance(raw, dict):
-        return raw.get("tasks", [])
-    return raw if isinstance(raw, list) else []
+        tasks = raw.get("tasks", [])
+    else:
+        tasks = raw if isinstance(raw, list) else []
+    _migrate_tasks(tasks)
+    return tasks
 
 
 def save_closed_yaml(closed_list: list[dict[str, Any]]) -> None:
@@ -221,8 +258,20 @@ def load_inbox() -> str:
 
 
 def _strip_none_fields(task: dict[str, Any]) -> dict[str, Any]:
-    """Return a new dict with only non-None values."""
-    return {k: v for k, v in task.items() if v is not None}
+    """Return a new dict with only non-None values and non-empty collections."""
+    result = {}
+    for k, v in task.items():
+        if v is None:
+            continue
+        if v == "":
+            continue
+        if isinstance(v, (list, dict)) and not v:
+            continue
+        # Skip legacy fields no longer in use
+        if k in ("related",):
+            continue
+        result[k] = v
+    return result
 
 
 def _strip_none_fields_from_list(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -244,10 +293,79 @@ def _format_id(counter: int) -> str:
     return f"TSK-{counter:04d}"
 
 
+def _normalize_priority(priority: Any) -> int | None:
+    """Convert old named priority to int, pass through ints. Returns None for bad values."""
+    if priority is None:
+        return None
+    if isinstance(priority, int):
+        return priority if priority in PRIORITY_ORDER else None
+    if isinstance(priority, str):
+        # Try named alias first, then int parse
+        mapped = _PRIORITY_ALIASES.get(priority.lower())
+        if mapped is not None:
+            return mapped
+        try:
+            val = int(priority)
+            return val if val in PRIORITY_ORDER else None
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def _format_priority(priority: Any) -> str:
+    """Format a priority value for display."""
+    norm = _normalize_priority(priority)
+    if norm is None:
+        return "-"
+    return PRIORITY_LABELS.get(norm, str(norm))
+
+
 def _priority_sort_key(task: dict[str, Any]) -> int:
     """Return sort weight for priority (lower = higher priority)."""
-    p = task.get("priority")
-    return PRIORITY_ORDER.get(p, 99) if p else 99
+    p = _normalize_priority(task.get("priority"))
+    return p if p is not None else 99
+
+
+def _ensure_deps_normalized(task: dict[str, Any]) -> dict[str, Any]:
+    """Migrate old 'related' field to new 'deps' list format. Mutates and returns the task."""
+    # Migrate old named priority to numeric
+    old_p = task.get("priority")
+    if old_p is not None and isinstance(old_p, str):
+        new_p = _normalize_priority(old_p)
+        if new_p is not None:
+            task["priority"] = new_p
+
+    # Migrate old related field to deps
+    related = task.get("related")
+    if related and not task.get("deps"):
+        _ensure_deps_field(task)
+        task["deps"].append({"id": str(related), "type": "relates"})
+    # Remove old related field
+    task.pop("related", None)
+    # Remove empty deps
+    deps = task.get("deps")
+    if deps is not None and not deps:
+        task.pop("deps", None)
+    return task
+
+
+def _ensure_deps_field(task: dict[str, Any]) -> list[dict[str, str]]:
+    """Ensure task has a 'deps' list field. Returns the deps list."""
+    if "deps" not in task or task["deps"] is None:
+        task["deps"] = []
+    elif not isinstance(task["deps"], list):
+        task["deps"] = []
+    return task["deps"]
+
+
+def _get_dep_ids(task: dict[str, Any], dep_type: str | None = None) -> list[str]:
+    """Get dep IDs optionally filtered by type."""
+    deps = task.get("deps") or []
+    if not isinstance(deps, list):
+        return []
+    if dep_type:
+        return [d["id"] for d in deps if isinstance(d, dict) and d.get("type") == dep_type]
+    return [d["id"] for d in deps if isinstance(d, dict)]
 
 
 def _find_task_by_id(tasks: list[dict[str, Any]], task_id: str) -> dict[str, Any] | None:
@@ -265,6 +383,24 @@ def _resolve_related(task_id: str, tasks_yaml: list[dict[str, Any]],
     if found:
         return found
     return _find_task_by_id(closed_yaml, task_id)
+
+
+def _get_blockers(task: dict[str, Any], tasks_list: list[dict[str, Any]],
+                  closed_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Get unresolved blocking deps for a task. Returns list of blocking task dicts."""
+    block_ids = _get_dep_ids(task, dep_type="blocks")
+    blockers: list[dict[str, Any]] = []
+    for bid in block_ids:
+        target = _resolve_related(bid, tasks_list, closed_list)
+        if target is None or (target.get("status") != "done" and not target.get("closed", False)):
+            blockers.append({"id": bid, "task": target})
+    return blockers
+
+
+def _is_task_blocked(task: dict[str, Any], tasks_list: list[dict[str, Any]],
+                     closed_list: list[dict[str, Any]]) -> bool:
+    """Check if a task has any unresolved blocking deps."""
+    return len(_get_blockers(task, tasks_list, closed_list)) > 0
 
 
 def _collect_all_tags(tasks: list[dict[str, Any]]) -> dict[str, int]:
@@ -369,10 +505,16 @@ def next_counter_and_id() -> tuple[int, str]:
     return new_counter, _format_id(new_counter)
 
 
-def add_task(title: str, priority: str | None = None, tags: list[str] | None = None,
-             source: str | None = None, related: str | None = None,
+def add_task(title: str, priority: int | str | None = None,
+             tags: list[str] | None = None,
+             source: str | None = None,
+             deps: list[dict[str, str]] | None = None,
+             related: str | None = None,
              notes: str | None = None) -> dict[str, Any]:
     """Create a new task and prepend it to tasks.yaml.
+
+    deps: list of {"id": "TSK-NNNN", "type": "<dep_type>"} dicts.
+    related: legacy convenience — creates a "relates" dep entry if no deps given.
 
     Returns the created task dict.
     """
@@ -391,14 +533,19 @@ def add_task(title: str, priority: str | None = None, tags: list[str] | None = N
         "created": _now_date(),
         "closed": False,
     }
-    if priority:
-        task["priority"] = priority
+    if priority is not None:
+        norm_p = _normalize_priority(priority)
+        if norm_p is not None:
+            task["priority"] = norm_p
     if tags:
         task["tags"] = [t.lower().strip().replace(" ", "-") for t in tags]
     if source:
         task["source"] = source
-    if related:
-        task["related"] = related
+    # Handle deps vs related
+    if deps:
+        task["deps"] = deps
+    elif related:
+        task["deps"] = [{"id": related, "type": "relates"}]
     if notes:
         # Store as list[str] — single string becomes one-element list
         task["notes"] = [notes]
@@ -409,11 +556,17 @@ def add_task(title: str, priority: str | None = None, tags: list[str] | None = N
     return task
 
 
-def update_task(task_id: str, status: str | None = None, priority: str | None = None,
-                tags: list[str] | None = None, related: str | None = None,
+def update_task(task_id: str, status: str | None = None,
+                priority: int | str | None = None,
+                tags: list[str] | None = None,
+                deps: list[dict[str, str]] | None = None,
+                related: str | None = None,
                 notes: str | None = None, replace_notes: bool = False,
                 closed: bool | None = None) -> dict[str, Any]:
-    """Update fields on an existing task. Tags are appended, not replaced.
+    """Update fields on an existing task. Tags and deps are appended, not replaced.
+
+    deps: list of {"id": "TSK-NNNN", "type": "<dep_type>"} dicts to append.
+    related: legacy convenience — appends a "relates" dep entry.
 
     Returns the updated task dict.
     Raises ValueError if task not found.
@@ -426,7 +579,9 @@ def update_task(task_id: str, status: str | None = None, priority: str | None = 
     if status is not None:
         task["status"] = status
     if priority is not None:
-        task["priority"] = priority
+        norm_p = _normalize_priority(priority)
+        if norm_p is not None:
+            task["priority"] = norm_p
     if tags is not None:
         existing = task.get("tags", []) or []
         new_tags = [t.lower().strip().replace(" ", "-") for t in tags]
@@ -434,8 +589,19 @@ def update_task(task_id: str, status: str | None = None, priority: str | None = 
             if tag not in existing:
                 existing.append(tag)
         task["tags"] = existing
-    if related is not None:
-        task["related"] = related
+    # Handle deps vs related — append, don't replace
+    if deps:
+        existing_deps = _ensure_deps_field(task)
+        for dep in deps:
+            dep_id = dep.get("id", "")
+            dep_type = dep.get("type", "relates")
+            # Avoid duplicates: same id + type
+            if not any(d.get("id") == dep_id and d.get("type") == dep_type for d in existing_deps):
+                existing_deps.append({"id": dep_id, "type": dep_type})
+    elif related is not None:
+        existing_deps = _ensure_deps_field(task)
+        if not any(d.get("id") == related and d.get("type") == "relates" for d in existing_deps):
+            existing_deps.append({"id": related, "type": "relates"})
     if notes is not None:
         existing = _normalize_notes(task.get("notes"))
         if replace_notes or not existing:
@@ -508,19 +674,36 @@ def close_task(task_id: str, note: str | None = None) -> dict[str, Any]:
     return task
 
 
+def _task_has_dep_id(task: dict[str, Any], dep_id: str) -> bool:
+    """Check if a task has a dep entry pointing to the given ID."""
+    for dep in (task.get("deps") or []):
+        if isinstance(dep, dict) and dep.get("id") == dep_id:
+            return True
+    # Also check legacy related field for backwards compat during migration
+    if task.get("related") == dep_id:
+        return True
+    return False
+
+
 def filter_tasks(tasks: list[dict[str, Any]], status: str | None = None,
                  tags: list[str] | None = None, tag: str | None = None,
-                 priority: str | None = None,
+                 tags_any: list[str] | None = None,
+                 priority: int | str | None = None,
                  source: str | None = None, related: str | None = None) -> list[dict[str, Any]]:
     """Filter a task list by status, tags, priority, source, and/or related. All filters ANDed.
 
     tags: list of tags — task must contain ALL of them (AND logic).
+    tags_any: list of tags — task must contain ANY of them (OR logic).
+    priority: numeric or named alias.
+    related: matches any dep entry with that ID (checks against 'deps' list).
     """
     result = tasks
     if status:
         result = [t for t in result if t.get("status") == status]
-    if priority:
-        result = [t for t in result if t.get("priority") == priority]
+    if priority is not None:
+        norm_p = _normalize_priority(priority)
+        if norm_p is not None:
+            result = [t for t in result if _normalize_priority(t.get("priority")) == norm_p]
     if source:
         result = [t for t in result if t.get("source") == source]
     if tag:
@@ -528,8 +711,11 @@ def filter_tasks(tasks: list[dict[str, Any]], status: str | None = None,
     if tags:
         for tag in tags:
             result = [t for t in result if tag in (t.get("tags") or [])]
+    if tags_any:
+        normalized_any = [t.lower().strip().replace(" ", "-") for t in tags_any]
+        result = [t for t in result if any(tg in (t.get("tags") or []) for tg in normalized_any)]
     if related:
-        result = [t for t in result if t.get("related") == related]
+        result = [t for t in result if _task_has_dep_id(t, related)]
     return result
 
 
@@ -544,10 +730,19 @@ def _task_text(task: dict[str, Any]) -> str:
         task.get("id", ""),
         task.get("title", ""),
         task.get("status", ""),
-        task.get("priority", ""),
+        str(task.get("priority", "")),
         task.get("source", ""),
         " ".join(task.get("tags", []) or []),
     ]
+    # Add dep IDs and types to search text
+    for dep in (task.get("deps") or []):
+        if isinstance(dep, dict):
+            parts.append(dep.get("id", ""))
+            parts.append(dep.get("type", ""))
+    # Also check legacy related field
+    related = task.get("related")
+    if related:
+        parts.append(str(related))
     notes = task.get("notes")
     if notes:
         if isinstance(notes, list):
@@ -597,21 +792,32 @@ def init():
 
 # ---- add ----
 
+def _parse_dep_option(dep_str: str) -> dict[str, str]:
+    """Parse 'id:type' or just 'id' (defaults to relates type)."""
+    if ":" in dep_str:
+        parts = dep_str.split(":", 1)
+        return {"id": parts[0], "type": parts[1]}
+    return {"id": dep_str, "type": "relates"}
+
+
 @main.command()
 @click.argument("title")
 @click.option("--tag", "-t", "tags", multiple=True, help="Tag(s) to apply (repeatable)")
-@click.option("--priority", "-p", type=click.Choice(list(VALID_PRIORITIES)), help="Priority level")
+@click.option("--priority", "-p", help="Priority: 0-4 or name (critical, urgent, high, medium, low, backlog)")
 @click.option("--source", "-s", type=click.Choice(list(VALID_SOURCES)), default="agent", help="Source of the task")
-@click.option("--related", "-r", help="Related task ID (e.g. TSK-0042)")
+@click.option("--dep", "deps", multiple=True, help="Dependency: id:type (e.g. TSK-0042:blocks, TSK-0017:relates)")
+@click.option("--related", "-r", help="Related task ID (shorthand for --dep id:relates)")
 @click.option("--notes", "-n", help="Freeform notes")
 def add(title: str, tags: tuple[str, ...], priority: str | None, source: str,
-        related: str | None, notes: str | None):
+        deps: tuple[str, ...], related: str | None, notes: str | None):
     """Create a new task. ID is auto-generated."""
+    parsed_deps = [_parse_dep_option(d) for d in deps] if deps else None
     task = add_task(
         title=title,
         priority=priority,
         tags=list(tags) if tags else None,
         source=source,
+        deps=parsed_deps,
         related=related,
         notes=notes,
     )
@@ -623,12 +829,14 @@ def add(title: str, tags: tuple[str, ...], priority: str | None, source: str,
 @main.command("list")
 @click.option("--status", type=click.Choice(list(VALID_STATUSES)), help="Filter by status")
 @click.option("--tag", "tags", multiple=True, help="Filter by tag (repeatable, AND logic)")
-@click.option("--priority", type=click.Choice(list(VALID_PRIORITIES)), help="Filter by priority")
+@click.option("--tag-any", "tags_any", multiple=True, help="Filter by tag (OR logic, repeatable)")
+@click.option("--priority", help="Filter by priority (0-4 or name like urgent, high)")
 @click.option("--source", type=click.Choice(list(VALID_SOURCES)), help="Filter by source")
-@click.option("--related", "-r", help="Filter by related task ID")
+@click.option("--related", "-r", help="Filter by related/dep task ID")
 @click.option("--text", "-t", help="Full-text search (combined with other filters)")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
-def list_cmd(status: str | None, tags: tuple[str, ...], priority: str | None,
+def list_cmd(status: str | None, tags: tuple[str, ...], tags_any: tuple[str, ...],
+             priority: str | None,
              source: str | None, related: str | None, text: str | None,
              json_output: bool):
     """List active tasks (not done). Newest first.
@@ -636,8 +844,10 @@ def list_cmd(status: str | None, tags: tuple[str, ...], priority: str | None,
     \b
       tasks list --status todo
       tasks list --tag bug --tag auth
+      tasks list --tag-any bug --tag-any security
       tasks list --related TSK-0001
       tasks list --text "login"
+      tasks list --priority 1
     """
     try:
         _, tasks = load_tasks_yaml()
@@ -648,6 +858,7 @@ def list_cmd(status: str | None, tags: tuple[str, ...], priority: str | None,
     tasks = [t for t in tasks if not t.get("closed", False)]
     tasks = filter_tasks(tasks, status=status,
                          tags=list(tags) if tags else None,
+                         tags_any=list(tags_any) if tags_any else None,
                          priority=priority, source=source, related=related)
 
     if text:
@@ -672,7 +883,7 @@ def list_cmd(status: str | None, tags: tuple[str, ...], priority: str | None,
         table.add_row(
             t.get("id", "?"),
             t.get("status", "?"),
-            t.get("priority", "-"),
+            _format_priority(t.get("priority")),
             t.get("title", "?"),
             ", ".join(t.get("tags", []) or []),
         )
@@ -700,7 +911,7 @@ def show(task_id: str):
         click.echo(f"Task not found: {task_id}", err=True)
         sys.exit(1)
 
-    click.echo(f"\n  [{task.get('id')}] {task.get('status')}  priority: {task.get('priority', '-')}")
+    click.echo(f"\n  [{task.get('id')}] {task.get('status')}  priority: {_format_priority(task.get('priority'))}")
     click.echo(f"  {task.get('title')}")
 
     tags = task.get("tags")
@@ -713,9 +924,22 @@ def show(task_id: str):
             src += f" ({task['source_ref']})"
         click.echo(f"  source: {src}")
 
-    # Resolve related inline
-    related_id = task.get("related")
-    if related_id:
+    # Show deps inline
+    deps = task.get("deps")
+    if deps:
+        for dep in deps:
+            if not isinstance(dep, dict):
+                continue
+            dep_id = dep.get("id", "")
+            dep_type = dep.get("type", "relates")
+            target = _resolve_related(dep_id, tasks, closed_list)
+            if target:
+                click.echo(f"  dep ({dep_type}): {dep_id} ({target.get('status')}) — \"{target.get('title')}\"")
+            else:
+                click.echo(f"  dep ({dep_type}): {dep_id} (not found)")
+    # Legacy related fallback
+    elif task.get("related"):
+        related_id = task["related"]
         target = _resolve_related(related_id, tasks, closed_list)
         if target:
             click.echo(f"  related: {related_id} ({target.get('status')}) — \"{target.get('title')}\"")
@@ -747,20 +971,24 @@ def show(task_id: str):
 @click.argument("task_id")
 @click.option("--status", type=click.Choice(list(VALID_STATUSES)), help="Change status")
 @click.option("--tag", "-t", "tags", multiple=True, help="Tag(s) to append (repeatable)")
-@click.option("--priority", "-p", type=click.Choice(list(VALID_PRIORITIES)), help="Change priority")
-@click.option("--related", "-r", help="Set related task ID")
+@click.option("--priority", "-p", help="Change priority (0-4 or name like urgent, high)")
+@click.option("--dep", "deps", multiple=True, help="Append dependency: id:type (repeatable)")
+@click.option("--related", "-r", help="Set related task ID (shorthand for --dep id:relates)")
 @click.option("--notes", "-n", help="Append a note (use --replace-notes to overwrite)")
 @click.option("--replace-notes", is_flag=True, help="Replace notes instead of appending")
 @click.option("--closed", "-c", is_flag=True, help="Close the task (move to closed.yaml)")
 def update(task_id: str, status: str | None, tags: tuple[str, ...], priority: str | None,
-           related: str | None, notes: str | None, replace_notes: bool, closed: bool):
-    """Update fields on a task. Tags are appended to existing."""
+           deps: tuple[str, ...], related: str | None, notes: str | None,
+           replace_notes: bool, closed: bool):
+    """Update fields on a task. Tags and deps are appended to existing."""
+    parsed_deps = [_parse_dep_option(d) for d in deps] if deps else None
     try:
         task = update_task(
             task_id=task_id,
             status=status,
             priority=priority,
             tags=list(tags) if tags else None,
+            deps=parsed_deps,
             related=related,
             notes=notes,
             replace_notes=replace_notes,
@@ -802,9 +1030,11 @@ def close(task_id: str, note: str | None):
 @main.command()
 @click.option("--take", default="1", help="Number of tasks, or 'all'")
 @click.option("--tag", help="Filter by tag")
-@click.option("--priority", type=click.Choice(list(VALID_PRIORITIES)), help="Filter by priority")
-@click.option("--skip-related", is_flag=True, help="Exclude tasks whose related target is not done")
-def next_cmd(take: str, tag: str | None, priority: str | None, skip_related: bool):
+@click.option("--priority", help="Filter by priority (0-4 or name)")
+@click.option("--skip-related", is_flag=True, help="Exclude tasks whose deps (type=blocks) are not resolved")
+@click.option("--skip-blocks", is_flag=True, help="Alias for --skip-related")
+def next_cmd(take: str, tag: str | None, priority: str | None,
+             skip_related: bool, skip_blocks: bool):
     """Show highest-priority todo task(s)."""
     try:
         _, tasks = load_tasks_yaml()
@@ -823,23 +1053,12 @@ def next_cmd(take: str, tag: str | None, priority: str | None, skip_related: boo
         priority=priority,
     )
 
-    # --skip-related: exclude tasks with unresolved related
-    if skip_related:
-        filtered: list[dict[str, Any]] = []
-        for t in candidates:
-            rid = t.get("related")
-            if rid:
-                target = _resolve_related(rid, tasks, closed_list)
-                if target is None or (target.get("status") != "done" and not target.get("closed", False)):
-                    continue  # skip: related target not done or not found
-            filtered.append(t)
-        candidates = filtered
+    # --skip-related / --skip-blocks: exclude tasks with unresolved blocking deps
+    skip = skip_related or skip_blocks
+    if skip:
+        candidates = [t for t in candidates if not _is_task_blocked(t, tasks, closed_list)]
 
     # Sort by priority (highest first), then newest first
-    candidates.sort(key=lambda t: (_priority_sort_key(t), t.get("created", "")), reverse=False)
-    # For newest-first when same priority: reverse created sort
-    # Actually: sort by priority ascending, then created descending
-    # Let's do a two-pass: group same priority, then sort each group by created desc
     candidates.sort(key=lambda t: t.get("created", ""), reverse=True)  # newest first
     candidates.sort(key=_priority_sort_key)  # stable sort by priority (lower=higher)
 
@@ -861,7 +1080,7 @@ def next_cmd(take: str, tag: str | None, priority: str | None, skip_related: boo
 
     for t in results:
         tags_str = ", ".join(t.get("tags", []) or [])
-        click.echo(f"  [{t.get('id')}] {t.get('priority', '-'):6s}  {t.get('title')}  tags: {tags_str}")
+        click.echo(f"  [{t.get('id')}] {_format_priority(t.get('priority')):4s}  {t.get('title')}  tags: {tags_str}")
 
 
 # ---- status ----
@@ -909,13 +1128,13 @@ def status(json_output: bool):
         click.echo("\nIN PROGRESS")
         for t in in_progress:
             tags_str = ", ".join(t.get("tags", []) or [])
-            click.echo(f"  [{t.get('id')}] {t.get('priority', '-'):6s}  {t.get('title')}  tags: {tags_str}")
+            click.echo(f"  [{t.get('id')}] {_format_priority(t.get('priority')):4s}  {t.get('title')}  tags: {tags_str}")
 
     if top_todo:
         click.echo("\nTOP PRIORITY")
         for t in top_todo:
             tags_str = ", ".join(t.get("tags", []) or [])
-            click.echo(f"  [{t.get('id')}] {t.get('priority', '-'):6s}  {t.get('title')}  tags: {tags_str}")
+            click.echo(f"  [{t.get('id')}] {_format_priority(t.get('priority')):4s}  {t.get('title')}  tags: {tags_str}")
     else:
         click.echo("\nNo pending tasks.")
 
@@ -932,12 +1151,14 @@ def status(json_output: bool):
 
 @main.command()
 @click.option("--tag", "tags", multiple=True, help="Filter by tag (repeatable, AND logic)")
+@click.option("--tag-any", "tags_any", multiple=True, help="Filter by tag (OR logic, repeatable)")
 @click.option("--text", help="Full-text search within closed tasks")
 @click.option("--related", "-r", help="Filter by related task ID")
 @click.option("--limit", default="30", help="Number of tasks to show, or 'all' (default: 30)")
 @click.option("--offset", default=0, type=int, help="Skip N entries from the newest (default: 0)")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
-def history(tags: tuple[str, ...], text: str | None, related: str | None,
+def history(tags: tuple[str, ...], tags_any: tuple[str, ...], text: str | None,
+            related: str | None,
             limit: str, offset: int, json_output: bool):
     """Show recently closed tasks (newest first). Default limit: 30.
 
@@ -947,6 +1168,7 @@ def history(tags: tuple[str, ...], text: str | None, related: str | None,
 
     closed_list = filter_tasks(closed_list,
                                tags=list(tags) if tags else None,
+                               tags_any=list(tags_any) if tags_any else None,
                                related=related)
 
     if text:
@@ -993,7 +1215,7 @@ def history(tags: tuple[str, ...], text: str | None, related: str | None,
         completed_display = completed_val[:10] if completed_val else "?"
         table.add_row(
             t.get("id", "?"),
-            t.get("priority", "-"),
+            _format_priority(t.get("priority")),
             t.get("title", "?"),
             completed_display,
             ", ".join(t.get("tags", []) or []),
@@ -1026,8 +1248,9 @@ def inbox():
 
 @main.command()
 @click.argument("text")
+@click.option("--in", "search_field", help="Scope search to a specific field (title, notes, id, status, priority, tags, source)")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
-def search(text: str, json_output: bool):
+def search(text: str, search_field: str | None, json_output: bool):
     """Full-text search across ALL tasks (active + closed).
 
     \b
@@ -1035,6 +1258,8 @@ def search(text: str, json_output: bool):
       tasks search login
       tasks search bug
       tasks search "dark mode"
+      tasks search login --in title
+      tasks search "auth" --in notes
     """
     try:
         _, tasks = load_tasks_yaml()
@@ -1050,7 +1275,22 @@ def search(text: str, json_output: bool):
         if ct.get("id") not in active_ids:
             all_tasks.append(ct)
 
-    results = search_tasks(all_tasks, text)
+    if search_field:
+        # Field-scoped search
+        needle = text.lower()
+        results = []
+        for t in all_tasks:
+            val = t.get(search_field)
+            if val is None:
+                continue
+            if isinstance(val, list):
+                val_str = " ".join(str(v) for v in val).lower()
+            else:
+                val_str = str(val).lower()
+            if needle in val_str:
+                results.append(t)
+    else:
+        results = search_tasks(all_tasks, text)
 
     if json_output:
         click.echo(__import__("json").dumps(results, indent=2))
@@ -1072,13 +1312,184 @@ def search(text: str, json_output: bool):
         table.add_row(
             t.get("id", "?"),
             t.get("status", "?"),
-            t.get("priority", "-"),
+            _format_priority(t.get("priority")),
             t.get("title", "?"),
             ", ".join(t.get("tags", []) or []),
             t.get("source", "-"),
         )
 
     console.print(table)
+
+
+# ---- deps ----
+
+@main.command()
+@click.argument("task_id")
+def deps(task_id: str):
+    """Show dependency graph for a task (both directions)."""
+    try:
+        _, tasks = load_tasks_yaml()
+        closed_list = load_closed_yaml()
+    except FileNotFoundError as e:
+        click.echo(str(e), err=True)
+        sys.exit(1)
+
+    task = _find_task_by_id(tasks, task_id)
+    if task is None:
+        task = _find_task_by_id(closed_list, task_id)
+    if task is None:
+        click.echo(f"Task not found: {task_id}", err=True)
+        sys.exit(1)
+
+    click.echo(f"\n  [{task.get('id')}] {task.get('title')}")
+
+    # Show deps this task has (outgoing)
+    out_deps = task.get("deps") or []
+    if out_deps:
+        click.echo("\n  DEPENDS ON:")
+        for dep in out_deps:
+            if not isinstance(dep, dict):
+                continue
+            dep_id = dep.get("id", "")
+            dep_type = dep.get("type", "relates")
+            target = _resolve_related(dep_id, tasks, closed_list)
+            if target:
+                status_str = target.get("status", "?")
+                click.echo(f"    {dep_id} ({dep_type}) [{status_str}] — {target.get('title')}")
+            else:
+                click.echo(f"    {dep_id} ({dep_type}) [not found]")
+
+    # Show tasks that depend on this one (incoming)
+    incoming: list[tuple[str, str, str]] = []  # (dep_id, dep_type, title)
+    for t in tasks + closed_list:
+        for dep in (t.get("deps") or []):
+            if isinstance(dep, dict) and dep.get("id") == task_id:
+                incoming.append((t.get("id", "?"), dep.get("type", "?"), t.get("title", "?")))
+                break  # one entry per dependent task
+    if incoming:
+        click.echo("\n  DEPENDED BY:")
+        for dep_id, dep_type, title in incoming:
+            click.echo(f"    {dep_id} ({dep_type}) — {title}")
+
+    if not out_deps and not incoming:
+        click.echo("  No dependencies.")
+    click.echo("")
+
+
+# ---- ready ----
+
+@main.command()
+@click.option("--take", default="5", help="Number of tasks, or 'all'")
+@click.option("--tag", help="Filter by tag")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+def ready(take: str, tag: str | None, json_output: bool):
+    """Show top-priority unblocked todo tasks.
+
+    Excludes tasks whose blocks-type deps are not yet done/closed.
+    Sorted by priority (p0 first), then newest first.
+    """
+    try:
+        _, tasks = load_tasks_yaml()
+        closed_list = load_closed_yaml()
+    except FileNotFoundError as e:
+        click.echo(str(e), err=True)
+        sys.exit(1)
+
+    # Filter to todo, not closed, not blocked
+    candidates = [
+        t for t in tasks
+        if t.get("status") == "todo"
+        and not t.get("closed", False)
+        and not _is_task_blocked(t, tasks, closed_list)
+    ]
+
+    if tag:
+        candidates = [t for t in candidates if tag in (t.get("tags") or [])]
+
+    # Sort by priority, then newest first
+    candidates.sort(key=lambda t: t.get("created", ""), reverse=True)
+    candidates.sort(key=_priority_sort_key)
+
+    # Take
+    if take == "all":
+        count = len(candidates)
+    else:
+        try:
+            count = int(take)
+        except ValueError:
+            click.echo(f"Invalid --take value: {take}. Use a number or 'all'.", err=True)
+            sys.exit(1)
+
+    results = candidates[:count]
+
+    if json_output:
+        click.echo(__import__("json").dumps(results, indent=2))
+        return
+
+    if not results:
+        click.echo("No ready tasks. Check 'tasks blocked' or 'tasks next' for the full queue.")
+        return
+
+    click.echo(f"\nREADY ({len(results)}):")
+    for t in results:
+        tags_str = ", ".join(t.get("tags", []) or [])
+        click.echo(f"  [{t.get('id')}] {_format_priority(t.get('priority')):4s}  {t.get('title')}  tags: {tags_str}")
+    click.echo("")
+
+
+# ---- blocked ----
+
+@main.command()
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+def blocked(json_output: bool):
+    """Show tasks that are blocked by unresolved deps.
+
+    Lists what's blocking each task and the blocker's current status.
+    """
+    try:
+        _, tasks = load_tasks_yaml()
+        closed_list = load_closed_yaml()
+    except FileNotFoundError as e:
+        click.echo(str(e), err=True)
+        sys.exit(1)
+
+    # Find active (not closed) tasks with unresolved blocks deps
+    candidates = [
+        t for t in tasks
+        if not t.get("closed", False)
+        and _is_task_blocked(t, tasks, closed_list)
+    ]
+
+    if json_output:
+        output = []
+        for t in candidates:
+            blockers = _get_blockers(t, tasks, closed_list)
+            entry = dict(t)
+            entry["blockers"] = [
+                {"id": b["id"], "status": b["task"].get("status") if b["task"] else "not_found",
+                 "title": b["task"].get("title") if b["task"] else None}
+                for b in blockers
+            ]
+            output.append(entry)
+        click.echo(__import__("json").dumps(output, indent=2))
+        return
+
+    if not candidates:
+        click.echo("\nNo blocked tasks. Everything's ready to go! 🎉\n")
+        return
+
+    click.echo(f"\nBLOCKED ({len(candidates)}):")
+    for t in candidates:
+        blockers = _get_blockers(t, tasks, closed_list)
+        tags_str = ", ".join(t.get("tags", []) or [])
+        click.echo(f"\n  [{t.get('id')}] {_format_priority(t.get('priority')):4s} {t.get('title')}  tags: {tags_str}")
+        for b in blockers:
+            b_task = b["task"]
+            if b_task:
+                click.echo(f"    ⛔ blocked by {b['id']} ({b_task.get('status')}) — {b_task.get('title')}")
+            else:
+                click.echo(f"    ⛔ blocked by {b['id']} (not found)")
+    click.echo("")
 
 
 if __name__ == "__main__":

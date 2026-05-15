@@ -1,6 +1,6 @@
 ---
 name: task-system
-description: "Use this skill when you need to manage project tasks — create, update, complete, prioritize, filter, or review work items. Trigger on: 'add a task', 'create task', 'show tasks', 'what's next', 'mark done', 'update task', 'task status', 'task history', 'next task', 'task inbox', 'list tasks', 'init tasks'. Also use proactively when starting a new work session — check the `tasks status` and `tasks next` to orient yourself before beginning new work. This skill covers the project's static, file-based task system (persistent, in-repo history) — NOT ephemeral runtime task tools."
+description: "Use this skill when you need to manage project tasks — create, update, complete, prioritize, filter, review, track dependencies, or find unblocked work. Trigger on: 'add a task', 'create task', 'show tasks', 'what's next', 'mark done', 'update task', 'task status', 'task history', 'next task', 'task inbox', 'list tasks', 'init tasks', 'task deps', 'ready tasks', 'blocked tasks', 'search tasks', 'tag-any', 'dependency graph'. Also use proactively when starting a new work session — check `tasks status` and `tasks ready` to orient yourself. This skill covers the project's static, file-based task system (persistent, in-repo history) with typed dependency tracking, ready queue, and priority management — NOT ephemeral runtime task tools."
 ---
 
 # AgentCLI Task System
@@ -18,6 +18,8 @@ A lightweight, **static, file-based task management system** embedded directly i
 - **Purpose: manage project complexity** — Track what needs doing, what is in progress, what is done. Keep the agent and human aligned on priorities without losing context across sessions.
 - **12 statuses, any lifecycle** — Tasks can hold any of 12 statuses: `todo`, `in-progress`, `done`, `blocked`, `postponed`, `cancelled`, `review`, `waiting`, `parked`, `deferred`, `backlog`, `abandoned`. You move between them freely with `tasks update --status <name>` — there are no restrictions on transitions.
 - **Counter-based IDs** — Tasks get `TSK-NNNN` IDs (e.g. `TSK-0001`). Auto-incrementing, no gaps are guaranteed (skipped IDs on concurrent writes are acceptable).
+- **Numeric priorities (p0-p4)** — `p0` (critical) > `p1` > `p2` > `p3` > `p4` (backlog). Named aliases like `urgent`, `high`, `medium`, `low` still work as input.
+- **Dependency system** — Tasks can declare typed dependencies (`blocks`, `parent`, `child`, `discovered`, `relates`). The `blocks` type affects the ready queue — `tasks ready` shows unblocked work, `tasks blocked` shows what's stuck.
 - **Newest-first ordering** — Recent tasks appear at the top of the active list. Closed tasks are oldest-first (chronological append).
 - **Growing complexity only when needed** — The system intentionally started minimal. New features are added only when a real need emerges.
 
@@ -173,17 +175,20 @@ Create a new task. ID is auto-generated.
 
 ```bash
 tasks add "Refactor auth middleware"
-tasks add "Fix login bug" --tag bug --tag urgent --priority high --source audit
-tasks add "Write tests" --related TSK-0003 --notes "Must cover edge cases"
+tasks add "Fix login bug" --tag bug --tag urgent --priority p0 --source audit
+tasks add "Write tests" --dep TSK-0003:blocks --notes "Must cover edge cases"
+tasks add "Blocked by API" --dep TSK-0002:blocks --priority high
+tasks add "Related docs" --related TSK-0005
 ```
 
 **Options:**
 | Flag | Shorthand | Description |
 |------|-----------|-------------|
 | `--tag` | `-t` | Tag(s) to apply (repeatable, e.g. `-t bug -t ui`) |
-| `--priority` | `-p` | Priority: `urgent`, `high`, `medium`, `low` |
+| `--priority` | `-p` | Priority: `0`–`4` or name (`critical`, `urgent`, `high`, `medium`, `low`, `backlog`) |
 | `--source` | `-s` | Source: `inbox`, `audit`, `test`, `jira`, `agent`, `idea` (default: `agent`) |
-| `--related` | `-r` | Related task ID (e.g. `TSK-0042`) |
+| `--dep` | — | Dependency in `id:type` format (e.g. `TSK-0042:blocks`). Types: `blocks`, `parent`, `child`, `discovered`, `relates`. Repeatable. |
+| `--related` | `-r` | Related task ID (shorthand for `--dep id:relates`) |
 | `--notes` | `-n` | Freeform notes (stored as array — see below) |
 
 **Notes:**
@@ -223,9 +228,10 @@ List active tasks (not closed). Newest first.
 tasks list                                    # All active tasks
 tasks list --status todo                      # Only todo tasks
 tasks list --tag bug --tag auth               # Tasks with BOTH 'bug' AND 'auth' tags
-tasks list --priority high --status in-progress
+tasks list --tag-any urgent --tag-any security # Tasks with EITHER 'urgent' OR 'security' tag
+tasks list --priority p1 --status in-progress
 tasks list --text "login"                     # Full-text search in active tasks
-tasks list --related TSK-0001                 # Tasks related to TSK-0001
+tasks list --related TSK-0001                 # Tasks with a dep pointing to TSK-0001
 tasks list --json                             # JSON output for programmatic use
 ```
 
@@ -233,10 +239,11 @@ tasks list --json                             # JSON output for programmatic use
 | Flag | Description |
 |------|-------------|
 | `--status` | Filter by status (12 options) |
-| `--tag` | Filter by tag (repeatable, AND logic) |
-| `--priority` | Filter by priority |
+| `--tag` | Filter by tag (repeatable, **AND** logic — all must match) |
+| `--tag-any` | Filter by tag (repeatable, **OR** logic — any can match) |
+| `--priority` | Filter by priority (`0`–`4` or name like `urgent`, `high`) |
 | `--source` | Filter by source |
-| `--related` | Filter by related task ID |
+| `--related` | Filter by dependency task ID (matches any dep type) |
 | `--text` | Full-text search across titles, notes, tags, and fields |
 | `--json` | Output raw JSON instead of a Rich table |
 
@@ -244,7 +251,7 @@ tasks list --json                             # JSON output for programmatic use
 
 ### `tasks show <TSK-NNNN>`
 
-Full detail of one task. Resolves related tasks inline (shows their status and title).
+Full detail of one task. Resolves dependencies inline (shows their type, status, and title).
 
 ```bash
 tasks show TSK-0001
@@ -252,18 +259,19 @@ tasks show TSK-0001
 
 **Sample output:**
 ```
-  [TSK-0001] todo  priority: high
+  [TSK-0001] todo  priority: p1
   Refactor auth middleware
   tags: refactor, auth
   source: audit
-  related: TSK-0003 (in-progress) — "Write tests for auth"
+  dep (blocks): TSK-0003 (in-progress) — "Write tests for auth"
+  dep (relates): TSK-0005 (done) — "Design API spec"
   created: 2026-05-10
 
 ```
 
 - Looks in both active and closed lists
-- Related tasks show their current status and title
-- Stale related references show `(not found)`
+- Dependencies show their type badge, current status, and title
+- Stale dep references show `(not found)`
 
 ---
 
@@ -288,17 +296,20 @@ tasks update TSK-0001 --status abandoned         # permanently dropped
 tasks update TSK-0001 --status cancelled --closed
 
 # Modify other fields
-tasks update TSK-0001 --priority urgent --tag needs-review
-tasks update TSK-0001 --notes "Revised approach: use OAuth2" --related TSK-0005
+tasks update TSK-0001 --priority p0 --tag needs-review
+tasks update TSK-0001 --notes "Revised approach: use OAuth2"
+tasks update TSK-0001 --dep TSK-0005:blocks     # append a blocking dependency
+tasks update TSK-0001 --related TSK-0003         # shorthand for --dep id:relates
 ```
 
 **Options:**
 | Flag | Shorthand | Description |
 |------|-----------|-------------|
 | `--status` | — | Change status. Any of: `todo`, `in-progress`, `done`, `blocked`, `postponed`, `cancelled`, `review`, `waiting`, `parked`, `deferred`, `backlog`, `abandoned` |
-| `--priority` | `-p` | Change priority: `urgent`, `high`, `medium`, `low` |
+| `--priority` | `-p` | Change priority: `0`–`4` or name (`critical`, `urgent`, `high`, `medium`, `low`, `backlog`) |
 | `--tag` | `-t` | **Append** tag(s) to existing tags (repeatable) — does NOT replace |
-| `--related` | `-r` | Set related task ID |
+| `--dep` | — | **Append** dependency in `id:type` format (repeatable). Types: `blocks`, `parent`, `child`, `discovered`, `relates`. |
+| `--related` | `-r` | Set related task ID (shorthand for `--dep id:relates`) |
 | `--notes` | `-n` | **Append** a note to the existing notes array |
 | `--replace-notes` | — | **Replace** all notes (use sparingly) |
 | `--closed` | `-c` | Close the task (move to `closed.yaml`) — can be combined with `--status` |
@@ -346,14 +357,16 @@ tasks close TSK-0001 --note "All tests passing, deployed to staging"
 
 ### `tasks next`
 
-Show the highest-priority todo task(s). Sorted by priority (urgent first) then newest first.
+Show the highest-priority todo task(s). Sorted by priority then newest first.
 
 ```bash
 tasks next                           # Top 1 highest-priority todo
 tasks next --take 3                  # Top 3
 tasks next --take all                # All todo tasks, sorted by priority
 tasks next --tag bug                 # Filter by tag first, then sort
-tasks next --skip-related            # Exclude tasks whose related target isn't done
+tasks next --priority p1             # Only show p1 priority tasks
+tasks next --skip-blocks             # Exclude tasks with unresolved blocks-type deps
+tasks next --skip-related            # Alias for --skip-blocks
 ```
 
 **Options:**
@@ -361,10 +374,11 @@ tasks next --skip-related            # Exclude tasks whose related target isn't 
 |------|-------------|
 | `--take` | Number of tasks to show, or `all` (default: `1`) |
 | `--tag` | Filter by tag before sorting |
-| `--priority` | Filter by priority before sorting |
-| `--skip-related` | Exclude tasks whose `related` target is not yet done or closed (ensures dependencies are resolved first) |
+| `--priority` | Filter by priority (`0`–`4` or name) |
+| `--skip-blocks` | Exclude tasks whose `blocks`-type deps are not yet done/closed |
+| `--skip-related` | Alias for `--skip-blocks` |
 
-**Priority order:** `urgent` > `high` > `medium` > `low` > unset
+**Priority order:** `p0` > `p1` > `p2` > `p3` > `p4` > unset
 
 ---
 
@@ -382,14 +396,14 @@ tasks status --json       # JSON for programmatic use
 Tasks: 1 in-progress, 3 todo, 1 blocked, 2 postponed
 
 IN PROGRESS
-  [TSK-0001] high    Refactor auth middleware  tags: refactor, auth
+  [TSK-0001] p1    Refactor auth middleware  tags: refactor, auth
 
 BLOCKED
-  [TSK-0004] high    Deploy to production      tags: devops
+  [TSK-0004] p1    Deploy to production      tags: devops
 
 TOP PRIORITY
-  [TSK-0002] urgent  Fix login vulnerability   tags: bug, security
-  [TSK-0003] high    Write auth tests          tags: test
+  [TSK-0002] p0    Fix login vulnerability   tags: bug, security
+  [TSK-0003] p1    Write auth tests          tags: test
 
 TAGS: auth(2), refactor(1), bug(1), security(1), test(1)
 
@@ -409,7 +423,8 @@ tasks history --limit all            # Show everything
 tasks history --offset 30            # Skip 30, show next page
 tasks history --offset 30 --limit 10 # Page 4: skip 30, show 10
 tasks history --json                 # JSON array (respects --limit/--offset)
-tasks history --tag deploy           # Filter by tag, then apply limit/offset
+tasks history --tag deploy           # Filter by tag (AND logic)
+tasks history --tag-any bug --tag-any security  # Filter by tag (OR logic)
 tasks history --text "auth"          # Full-text search in closed tasks
 ```
 
@@ -418,7 +433,8 @@ tasks history --text "auth"          # Full-text search in closed tasks
 |------|-------------|
 | `--limit` | Number of tasks to show, or `all` (default: `30`) |
 | `--offset` | Skip N entries from the newest (default: `0`) |
-| `--tag` | Filter by tag (repeatable, AND logic) |
+| `--tag` | Filter by tag (repeatable, **AND** logic) |
+| `--tag-any` | Filter by tag (repeatable, **OR** logic) |
 | `--related` | Filter by related task ID |
 | `--text` | Full-text search across titles, notes, tags, and fields |
 | `--json` | Output raw JSON instead of a Rich table |
@@ -471,9 +487,81 @@ Full-text search across **all tasks** — both active and closed. Case-insensiti
 tasks search login                      # any mention of "login"
 tasks search "dark mode"                # multi-word search
 tasks search bug --json                 # JSON output
+tasks search login --in title           # only in title field
+tasks search "auth" --in notes          # only in notes field
+tasks search "TSK-0001" --in deps       # search dependency IDs
 ```
 
-> **Note:** This is simple substring search, not a query DSL. For structured filters (status, tags, priority), use `tasks list` or `tasks history` instead.
+**Options:**
+| Flag | Description |
+|------|-------------|
+| `--in` | Scope search to a specific field: `title`, `notes`, `id`, `status`, `priority`, `tags`, `source`, `deps` |
+| `--json` | Output raw JSON instead of a Rich table |
+
+> For structured filters use `tasks list` or `tasks history` with `--tag`, `--tag-any`, `--priority`, `--status`, `--related`.
+
+---
+
+### `tasks ready`
+
+Show top-priority **unblocked** todo tasks. Excludes tasks whose `blocks`-type deps aren't done/closed. Sugar over `tasks next --skip-blocks` with better defaults.
+
+```bash
+tasks ready                       # Top 5 ready tasks
+tasks ready --take all            # All ready tasks
+tasks ready --take 3              # Top 3
+tasks ready --tag bug             # Filter by tag
+tasks ready --json                # JSON output
+```
+
+**Options:**
+| Flag | Description |
+|------|-------------|
+| `--take` | Number of tasks, or `all` (default: `5`) |
+| `--tag` | Filter by tag |
+| `--json` | Output raw JSON |
+
+---
+
+### `tasks blocked`
+
+Show tasks that are currently blocked by unresolved `blocks`-type dependencies. Lists what's blocking each task and the blocker's current status.
+
+```bash
+tasks blocked                      # Human-readable
+tasks blocked --json               # JSON with blockers info
+```
+
+**Sample output:**
+```
+BLOCKED (2):
+  [TSK-0003] p1  Login flow  tags: auth
+    ⛔ blocked by TSK-0001 (todo) — "Design login API"
+  [TSK-0012] p2  Dark mode   tags: ui
+    ⛔ blocked by TSK-0010 (in-progress) — "Pick color scheme"
+```
+
+---
+
+### `tasks deps <TSK-NNNN>`
+
+Show the dependency graph for a task (both outgoing and incoming directions).
+
+```bash
+tasks deps TSK-0001                # Show all deps for TSK-0001
+```
+
+**Sample output:**
+```
+  [TSK-0001] Refactor auth middleware
+
+  DEPENDS ON:
+    TSK-0003 (blocks) [in-progress] — "Write tests for auth"
+    TSK-0005 (relates) [done] — "Design API spec"
+
+  DEPENDED BY:
+    TSK-0008 (blocks) — "Deploy auth module"
+```
 
 ---
 
@@ -485,8 +573,14 @@ tasks search bug --json                 # JSON output
 # 1. Check what's pending
 tasks status
 
-# 2. See what to do next
-tasks next
+# 2. See what's unblocked and actionable
+tasks ready
+
+# 3. Or see full queue (including blocked)
+tasks next --take all
+
+# 4. Check for blockers if things feel stuck
+tasks blocked
 ```
 
 ### Inbox Processing
@@ -527,13 +621,16 @@ echo. > tasks/inbox.md          # Windows: wipe file to blank
 
 ```bash
 # Quick task from a known priority
-tasks add "Fix the login redirect" --priority high --tag bug
+tasks add "Fix the login redirect" --priority p1 --tag bug
 
 # Task from a detailed inbox note
 tasks add "Implement rate limiting" --source inbox --priority medium --notes "See inbox.md for requirements"
 
 # Task that depends on something else
-tasks add "Deploy to production" --related TSK-0007 --priority urgent
+tasks add "Deploy to production" --dep TSK-0007:blocks --priority p0
+
+# Task with a soft relationship
+tasks add "Investigate edge case" --related TSK-0002
 ```
 
 ### Tracking Progress
@@ -544,6 +641,7 @@ tasks update TSK-0004 --status in-progress
 
 # Hit a blocker — mark it
 tasks update TSK-0004 --status blocked --notes "Waiting on API key from IT"
+tasks update TSK-0004 --dep TSK-0010:blocks  # record what's blocking it
 # Later: unblocked
 tasks update TSK-0004 --status in-progress
 
@@ -551,13 +649,13 @@ tasks update TSK-0004 --status in-progress
 tasks update TSK-0004 --status review
 
 # Priority changed — push it to later
-tasks update TSK-0004 --status postponed --priority low
+tasks update TSK-0004 --status postponed --priority p3
 
 # Put it in the backlog for future triage
 tasks update TSK-0004 --status backlog
 
 # Something came up — change priority, add context
-tasks update TSK-0004 --priority urgent --notes "Client escalation, needs immediate attention"
+tasks update TSK-0004 --priority p0 --notes "Client escalation, needs immediate attention"
 
 # Cancelled — no longer relevant
 tasks update TSK-0004 --status cancelled --notes "Requirement dropped"
@@ -604,22 +702,26 @@ tasks status
 
 Use the task system **proactively** — not just when asked. Good triggers:
 
-- **Session start**: Run `tasks status` and `tasks next` to orient yourself before starting new work.
+- **Session start**: Run `tasks status` and `tasks ready` to orient yourself before starting new work.
+- **When you discover unblocked work**: Run `tasks ready` to see what can be picked up right now.
+- **When something feels stuck**: Run `tasks blocked` to find why — it shows blockers inline.
 - **When you discover work**: If you find something that needs doing (a bug, missing test, refactor opportunity), create a task:
   ```bash
-  tasks add "Investigate slow query in reports" --priority medium --tag performance
+  tasks add "Investigate slow query in reports" --priority p2 --tag performance
   ```
 - **When you complete work**: Close the task with a closing note:
   ```bash
   tasks close TSK-0005 --note "Found: missing index on user_id. Added migration."
   ```
-- **When context shifts**: Update the task — change status, priority, add tags, append context:
+- **When context shifts**: Update the task — change status, priority, add deps, append context:
   ```bash
   tasks update TSK-0002 --status blocked --notes "Waiting on IT for API key"
-  tasks update TSK-0002 --status in-progress       # unblocked
-  tasks update TSK-0002 --priority urgent --tag security
-  tasks update TSK-0002 --status postponed          # pushed to later
+  tasks update TSK-0002 --dep TSK-0010:blocks   # record the blocker
+  tasks update TSK-0002 --status in-progress      # unblocked
+  tasks update TSK-0002 --priority p0 --tag security
+  tasks update TSK-0002 --status postponed         # pushed to later
   ```
+- **When exploring relationships**: Run `tasks deps TSK-NNNN` to see the full dependency graph (both directions).
 - **When priorities need review**: Run `tasks next --take all` to see the full queue sorted by priority.
 - **When the inbox has items**: Check `tasks status` — if inbox count > 0, read and promote:
   ```bash

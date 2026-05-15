@@ -235,7 +235,7 @@ class TestAddTask:
             priority="high",
             tags=["bug", "ui"],
             source="jira",
-            related="TSK-0000",
+            deps=[{"id": "TSK-0000", "type": "blocks"}],
             notes="Some notes",
         )
         _assert_task_fields(
@@ -243,12 +243,12 @@ class TestAddTask:
             id="TSK-0001",
             title="Full task",
             status="todo",
-            priority="high",
+            priority=1,
             source="jira",
-            related="TSK-0000",
             notes=["Some notes"],
         )
         assert task["tags"] == ["bug", "ui"]
+        assert task["deps"] == [{"id": "TSK-0000", "type": "blocks"}]
         assert "created" in task
 
     def test_tags_normalized(self, initted: Path) -> None:
@@ -270,7 +270,7 @@ class TestAddTask:
         _, tasks = load_tasks_yaml()
         assert len(tasks) == 1
         assert tasks[0]["title"] == "Persistence test"
-        assert tasks[0]["priority"] == "medium"
+        assert tasks[0]["priority"] == 2
         assert tasks[0]["tags"] == ["test"]
 
     def test_unicode_title(self, initted: Path) -> None:
@@ -297,7 +297,7 @@ class TestUpdateTask:
     def test_update_priority(self, initted: Path) -> None:
         add_task("Test")
         updated = update_task("TSK-0001", priority="urgent")
-        assert updated["priority"] == "urgent"
+        assert updated["priority"] == 0
 
     def test_update_tags_appended(self, initted: Path) -> None:
         """Tags are appended, not replaced."""
@@ -321,7 +321,7 @@ class TestUpdateTask:
         add_task("A")
         add_task("B")
         updated = update_task("TSK-0002", related="TSK-0001")
-        assert updated["related"] == "TSK-0001"
+        assert updated["deps"] == [{"id": "TSK-0001", "type": "relates"}]
 
     def test_update_notes_appends(self, initted: Path) -> None:
         """Notes append by default, matching the CLI help text."""
@@ -337,7 +337,7 @@ class TestUpdateTask:
         add_task("Test", priority="low")
         update_task("TSK-0001", priority="high", tags=["updated"])
         _, tasks = load_tasks_yaml()
-        assert tasks[0]["priority"] == "high"
+        assert tasks[0]["priority"] == 1
         assert tasks[0]["tags"] == ["updated"]
 
     def test_update_only_requested_fields(self, initted: Path) -> None:
@@ -345,7 +345,7 @@ class TestUpdateTask:
         add_task("Test", priority="low", notes="original")
         update_task("TSK-0001", priority="urgent")
         _, tasks = load_tasks_yaml()
-        assert tasks[0]["priority"] == "urgent"
+        assert tasks[0]["priority"] == 0
         assert tasks[0]["notes"] == ["original"]
 
     @pytest.mark.parametrize("status_name", [
@@ -442,13 +442,13 @@ class TestFilterTasks:
 
     SAMPLE: list[dict[str, Any]] = [
         {"id": "TSK-0001", "title": "Bug fix", "status": "todo",
-         "priority": "high", "tags": ["bug"], "source": "jira"},
+         "priority": 1, "tags": ["bug"], "source": "jira"},
         {"id": "TSK-0002", "title": "Feature", "status": "todo",
-         "priority": "low", "tags": ["feature"], "source": "agent"},
+         "priority": 3, "tags": ["feature"], "source": "agent"},
         {"id": "TSK-0003", "title": "In progress", "status": "in-progress",
-         "priority": "urgent", "tags": ["bug", "ui"], "source": "inbox"},
+         "priority": 0, "tags": ["bug", "ui"], "source": "inbox"},
         {"id": "TSK-0004", "title": "Done task", "status": "done",
-         "priority": "medium", "tags": [], "source": "test"},
+         "priority": 2, "tags": [], "source": "test"},
     ]
 
     def test_no_filters(self) -> None:
@@ -465,7 +465,7 @@ class TestFilterTasks:
         assert all("bug" in (t.get("tags") or []) for t in result)
 
     def test_by_priority(self) -> None:
-        result = filter_tasks(self.SAMPLE, priority="high")
+        result = filter_tasks(self.SAMPLE, priority=1)
         assert len(result) == 1
         assert result[0]["id"] == "TSK-0001"
 
@@ -544,10 +544,11 @@ class TestHelpers:
         assert _resolve_related("TSK-9999", [], []) is None
 
     def test_priority_sort_key(self) -> None:
-        assert _priority_sort_key({"priority": "urgent"}) == 0
-        assert _priority_sort_key({"priority": "high"}) == 1
-        assert _priority_sort_key({"priority": "medium"}) == 2
-        assert _priority_sort_key({"priority": "low"}) == 3
+        assert _priority_sort_key({"priority": 0}) == 0
+        assert _priority_sort_key({"priority": 1}) == 1
+        assert _priority_sort_key({"priority": 2}) == 2
+        assert _priority_sort_key({"priority": 3}) == 3
+        assert _priority_sort_key({"priority": 4}) == 4
         assert _priority_sort_key({}) == 99
         assert _priority_sort_key({"priority": "bogus"}) == 99
 
@@ -613,15 +614,16 @@ class TestCliAdd:
             "--tag", "ui",
             "--priority", "high",
             "--source", "jira",
-            "--related", "TSK-0000",
+            "--dep", "TSK-0000:blocks",
             "--notes", "Important",
         ])
         assert result.exit_code == 0
         assert "Created TSK-0001: Full task" in result.output
         _, tasks = load_tasks_yaml()
-        assert tasks[0]["priority"] == "high"
+        assert tasks[0]["priority"] == 1
         assert tasks[0]["tags"] == ["bug", "ui"]
         assert tasks[0]["source"] == "jira"
+        assert tasks[0]["deps"] == [{"id": "TSK-0000", "type": "blocks"}]
 
     def test_add_auto_increments(self, initted: Path, runner: CliRunner) -> None:
         runner.invoke(main, ["add", "First"])
@@ -668,7 +670,7 @@ class TestCliList:
         assert len(tasks) == 1
         assert tasks[0]["title"] == "JSON task"
         assert tasks[0]["tags"] == ["json"]
-        assert tasks[0]["priority"] == "urgent"
+        assert tasks[0]["priority"] == 0
 
     def test_list_json_filtered(self, initted: Path, runner: CliRunner) -> None:
         runner.invoke(main, ["add", "Bug high", "--tag", "bug", "--priority", "high"])
@@ -723,7 +725,7 @@ class TestCliShow:
         assert result.exit_code == 0
         assert "TSK-0001" in result.output
         assert "Show me" in result.output
-        assert "urgent" in result.output
+        assert "p0" in result.output
         assert "detail" in result.output
 
     def test_show_not_found(self, initted: Path, runner: CliRunner) -> None:
@@ -736,7 +738,7 @@ class TestCliShow:
         runner.invoke(main, ["add", "Child task", "--related", "TSK-0001"])
         result = runner.invoke(main, ["show", "TSK-0002"])
         assert result.exit_code == 0
-        assert "related: TSK-0001 (todo)" in result.output
+        assert "dep (relates): TSK-0001 (todo)" in result.output
         assert "Parent task" in result.output
 
     def test_show_related_from_closed(self, initted: Path, runner: CliRunner) -> None:
@@ -747,13 +749,13 @@ class TestCliShow:
         result = runner.invoke(main, ["show", "TSK-0002"])
         assert result.exit_code == 0
         # Close preserves status (todo), so related shows (todo)
-        assert "related: TSK-0001 (todo)" in result.output
+        assert "dep (relates): TSK-0001 (todo)" in result.output
 
     def test_show_related_not_found(self, initted: Path, runner: CliRunner) -> None:
         runner.invoke(main, ["add", "Orphan", "--related", "TSK-9999"])
         result = runner.invoke(main, ["show", "TSK-0001"])
         assert result.exit_code == 0
-        assert "related: TSK-9999 (not found)" in result.output
+        assert "dep (relates): TSK-9999 (not found)" in result.output
 
     def test_show_closed_task(self, initted: Path, runner: CliRunner) -> None:
         runner.invoke(main, ["add", "To complete"])
@@ -804,7 +806,7 @@ class TestCliUpdate:
         runner.invoke(main, ["add", "Test task", "--priority", "low"])
         runner.invoke(main, ["update", "TSK-0001", "--priority", "urgent"])
         _, tasks = load_tasks_yaml()
-        assert tasks[0]["priority"] == "urgent"
+        assert tasks[0]["priority"] == 0
 
     def test_update_not_found(self, initted: Path, runner: CliRunner) -> None:
         result = runner.invoke(main, ["update", "TSK-9999"])
@@ -929,23 +931,23 @@ class TestCliNext:
         assert len(lines) == 2
 
     def test_next_skip_related(self, initted: Path, runner: CliRunner) -> None:
-        """--skip-related excludes tasks whose related target is not done."""
+        """--skip-related excludes tasks with unresolved blocks-type deps."""
         runner.invoke(main, ["add", "Independent"])
-        runner.invoke(main, ["add", "Depends on open", "--related", "TSK-0001"])
-        runner.invoke(main, ["add", "Depends on missing", "--related", "TSK-9999"])
+        runner.invoke(main, ["add", "Depends on open", "--dep", "TSK-0001:blocks"])
+        runner.invoke(main, ["add", "Depends on missing", "--dep", "TSK-9999:blocks"])
         result = runner.invoke(main, ["next", "--take", "all", "--skip-related"])
-        # TSK-0001: no related => included
+        # TSK-0001: no deps => included
         assert "TSK-0001" in result.output
-        # TSK-0002: related=TSK-0001 (todo, not done) => excluded
+        # TSK-0002: blocks=TSK-0001 (todo, not done) => excluded
         assert "TSK-0002" not in result.output
-        # TSK-0003: related=TSK-9999 (not found) => excluded
+        # TSK-0003: blocks=TSK-9999 (not found) => excluded
         assert "TSK-0003" not in result.output
 
     def test_next_skip_related_allows_closed(self, initted: Path, runner: CliRunner) -> None:
-        """--skip-related includes tasks whose related target is done."""
+        """--skip-related includes tasks whose blocks target is done/closed."""
         runner.invoke(main, ["add", "Target"])
         runner.invoke(main, ["close", "TSK-0001"])
-        runner.invoke(main, ["add", "Depends on done", "--related", "TSK-0001"])
+        runner.invoke(main, ["add", "Depends on done", "--dep", "TSK-0001:blocks"])
         result = runner.invoke(main, ["next", "--take", "all", "--skip-related"])
         assert "TSK-0002" in result.output
 
@@ -1207,6 +1209,477 @@ class TestCliInbox:
 
 
 # ===========================================================================
+# NEW FEATURE TESTS — deps, ready, blocked, priorities
+# ===========================================================================
+
+
+class TestDeps:
+    """Dependency system — deps list replaces related scalar."""
+
+    def test_add_with_dep(self, initted: Path, runner: CliRunner) -> None:
+        """Adding a task with --dep stores it correctly."""
+        runner.invoke(main, ["add", "Depends on A", "--dep", "TSK-0001:blocks"])
+        _, tasks = load_tasks_yaml()
+        assert tasks[0]["deps"] == [{"id": "TSK-0001", "type": "blocks"}]
+
+    def test_add_with_related_shorthand(self, initted: Path, runner: CliRunner) -> None:
+        """--related creates a relates-type dep."""
+        runner.invoke(main, ["add", "Related to A", "--related", "TSK-0001"])
+        _, tasks = load_tasks_yaml()
+        assert tasks[0]["deps"] == [{"id": "TSK-0001", "type": "relates"}]
+
+    def test_add_with_multiple_deps(self, initted: Path, runner: CliRunner) -> None:
+        """Multiple --dep flags create multiple deps."""
+        runner.invoke(main, ["add", "Multi dep", "--dep", "TSK-0001:blocks", "--dep", "TSK-0002:relates"])
+        _, tasks = load_tasks_yaml()
+        assert len(tasks[0]["deps"]) == 2
+        assert tasks[0]["deps"] == [
+            {"id": "TSK-0001", "type": "blocks"},
+            {"id": "TSK-0002", "type": "relates"},
+        ]
+
+    def test_update_appends_dep(self, initted: Path, runner: CliRunner) -> None:
+        """Updating with --dep appends to existing deps."""
+        runner.invoke(main, ["add", "Task", "--dep", "TSK-0001:relates"])
+        runner.invoke(main, ["update", "TSK-0001", "--dep", "TSK-0002:blocks"])
+        _, tasks = load_tasks_yaml()
+        assert len(tasks[0]["deps"]) == 2
+        assert tasks[0]["deps"] == [
+            {"id": "TSK-0001", "type": "relates"},
+            {"id": "TSK-0002", "type": "blocks"},
+        ]
+
+    def test_update_dep_no_duplicates(self, initted: Path, runner: CliRunner) -> None:
+        """Same id+type dep is not added twice."""
+        runner.invoke(main, ["add", "Task", "--dep", "TSK-0001:blocks"])
+        runner.invoke(main, ["update", "TSK-0002", "--dep", "TSK-0001:blocks"])
+        _, tasks = load_tasks_yaml()
+        assert len(tasks[0]["deps"]) == 1
+
+    def test_show_deps_inline(self, initted: Path, runner: CliRunner) -> None:
+        """tasks show displays deps with type and status."""
+        runner.invoke(main, ["add", "Target"])
+        runner.invoke(main, ["add", "Blocker", "--dep", "TSK-0001:blocks"])
+        result = runner.invoke(main, ["show", "TSK-0002"])
+        assert result.exit_code == 0
+        assert "dep (blocks): TSK-0001 (todo)" in result.output
+        assert "Target" in result.output
+
+    def test_show_deps_not_found(self, initted: Path, runner: CliRunner) -> None:
+        """Dep target not found shows (not found)."""
+        runner.invoke(main, ["add", "Orphan", "--dep", "TSK-9999:blocks"])
+        result = runner.invoke(main, ["show", "TSK-0001"])
+        assert result.exit_code == 0
+        assert "dep (blocks): TSK-9999 (not found)" in result.output
+
+    def test_deps_command_outgoing(self, initted: Path, runner: CliRunner) -> None:
+        """tasks deps shows outgoing dependencies."""
+        runner.invoke(main, ["add", "Target A"])
+        runner.invoke(main, ["add", "Depends on A", "--dep", "TSK-0001:blocks"])
+        result = runner.invoke(main, ["deps", "TSK-0002"])
+        assert result.exit_code == 0
+        assert "DEPENDS ON" in result.output
+        assert "TSK-0001" in result.output
+
+    def test_deps_command_incoming(self, initted: Path, runner: CliRunner) -> None:
+        """tasks deps shows incoming dependencies."""
+        runner.invoke(main, ["add", "Target"])
+        runner.invoke(main, ["add", "Depends on target", "--dep", "TSK-0001:blocks"])
+        result = runner.invoke(main, ["deps", "TSK-0001"])
+        assert result.exit_code == 0
+        assert "DEPENDED BY" in result.output
+        assert "TSK-0002" in result.output
+
+    def test_list_filter_related_works_with_deps(self, initted: Path, runner: CliRunner) -> None:
+        """--related filter matches deps by ID."""
+        runner.invoke(main, ["add", "Target"])
+        runner.invoke(main, ["add", "Linked", "--dep", "TSK-0001:relates"])
+        result = runner.invoke(main, ["list", "--related", "TSK-0001", "--json"])
+        tasks = json.loads(result.output)
+        assert len(tasks) == 1
+        assert tasks[0]["id"] == "TSK-0002"
+
+    def test_deps_command_not_found(self, initted: Path, runner: CliRunner) -> None:
+        """tasks deps with nonexistent ID shows error."""
+        result = runner.invoke(main, ["deps", "TSK-9999"])
+        assert result.exit_code == 1
+        assert "Task not found" in result.output
+
+    def test_deps_command_on_closed(self, initted: Path, runner: CliRunner) -> None:
+        """tasks deps works on closed tasks too."""
+        runner.invoke(main, ["add", "Target"])
+        runner.invoke(main, ["close", "TSK-0001"])
+        result = runner.invoke(main, ["deps", "TSK-0001"])
+        assert result.exit_code == 0
+
+    def test_dep_without_colon_defaults_to_relates(self, initted: Path, runner: CliRunner) -> None:
+        """--dep TSK-0001 (no type) defaults to relates type."""
+        runner.invoke(main, ["add", "Default relates", "--dep", "TSK-0001"])
+        _, tasks = load_tasks_yaml()
+        assert tasks[0]["deps"] == [{"id": "TSK-0001", "type": "relates"}]
+
+    def test_deps_error_before_init(self, tmp_cwd: Path, runner: CliRunner) -> None:
+        """tasks deps shows helpful error before init."""
+        result = runner.invoke(main, ["deps", "TSK-0001"])
+        assert result.exit_code == 1
+        assert "Tasks file not found" in result.output
+
+    def test_old_related_auto_migrated(self, initted: Path, runner: CliRunner) -> None:
+        """Legacy 'related' field in YAML is auto-converted to deps on load."""
+        tasks_dir = initted / "tasks"
+        yaml_path = tasks_dir / "tasks.yaml"
+        # Manually inject old-format task
+        yaml_data = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+        yaml_data["tasks"] = [
+            {"id": "TSK-0001", "title": "Old format", "status": "todo",
+             "created": "2026-01-01", "closed": False, "related": "TSK-0005",
+             "priority": "urgent"}
+        ]
+        yaml_path.write_text(
+            "# header\n" + yaml.safe_dump(yaml_data, default_flow_style=False),
+            encoding="utf-8"
+        )
+        _, tasks = load_tasks_yaml()
+        # Should have migrated
+        assert "related" not in tasks[0]
+        assert tasks[0]["deps"] == [{"id": "TSK-0005", "type": "relates"}]
+        assert tasks[0]["priority"] == 0
+
+
+class TestReady:
+    """tasks ready — top-priority unblocked todos."""
+
+    def test_ready_shows_unblocked_only(self, initted: Path, runner: CliRunner) -> None:
+        """ready excludes tasks with unresolved blocks-type deps."""
+        runner.invoke(main, ["add", "Independent", "--priority", "high"])
+        runner.invoke(main, ["add", "Blocked task", "--dep", "TSK-0001:blocks", "--priority", "urgent"])
+        result = runner.invoke(main, ["ready", "--take", "all"])
+        assert result.exit_code == 0
+        # TSK-0002 is blocked by TSK-0001 (todo) => excluded
+        assert "TSK-0002" not in result.output
+        assert "TSK-0001" in result.output
+
+    def test_ready_includes_resolved_blocker(self, initted: Path, runner: CliRunner) -> None:
+        """ready includes tasks whose blocks dep is done/closed."""
+        runner.invoke(main, ["add", "Target"])
+        runner.invoke(main, ["close", "TSK-0001"])
+        runner.invoke(main, ["add", "Unblocked", "--dep", "TSK-0001:blocks"])
+        result = runner.invoke(main, ["ready", "--take", "all"])
+        assert result.exit_code == 0
+        assert "TSK-0002" in result.output
+
+    def test_ready_does_not_exclude_relates(self, initted: Path, runner: CliRunner) -> None:
+        """relates-type deps do NOT affect the ready queue."""
+        runner.invoke(main, ["add", "Target"])
+        runner.invoke(main, ["add", "Soft link", "--dep", "TSK-0001:relates"])
+        result = runner.invoke(main, ["ready", "--take", "all"])
+        assert result.exit_code == 0
+        assert "TSK-0002" in result.output
+
+    def test_ready_empty(self, initted: Path, runner: CliRunner) -> None:
+        """ready shows helpful message when nothing is ready."""
+        result = runner.invoke(main, ["ready"])
+        assert result.exit_code == 0
+        assert "No ready tasks" in result.output
+
+    def test_ready_json(self, initted: Path, runner: CliRunner) -> None:
+        """ready --json outputs valid JSON."""
+        runner.invoke(main, ["add", "Ready task", "--priority", "high"])
+        result = runner.invoke(main, ["ready", "--json"])
+        assert result.exit_code == 0
+        tasks = json.loads(result.output)
+        assert len(tasks) == 1
+        assert tasks[0]["id"] == "TSK-0001"
+
+    def test_ready_obeys_take(self, initted: Path, runner: CliRunner) -> None:
+        """--take limits the number of results."""
+        for i in range(5):
+            runner.invoke(main, ["add", f"Task {i}"])
+        result = runner.invoke(main, ["ready", "--take", "2", "--json"])
+        tasks = json.loads(result.output)
+        assert len(tasks) == 2
+
+    def test_ready_filters_by_tag(self, initted: Path, runner: CliRunner) -> None:
+        """ready --tag filters results."""
+        runner.invoke(main, ["add", "Bug task", "--tag", "bug"])
+        runner.invoke(main, ["add", "Docs task", "--tag", "docs"])
+        result = runner.invoke(main, ["ready", "--take", "all", "--tag", "bug", "--json"])
+        tasks = json.loads(result.output)
+        assert len(tasks) == 1
+        assert tasks[0]["title"] == "Bug task"
+
+    def test_ready_invalid_take(self, initted: Path, runner: CliRunner) -> None:
+        """ready --take with non-numeric value shows error."""
+        result = runner.invoke(main, ["ready", "--take", "abc"])
+        assert result.exit_code == 1
+        assert "Invalid --take value" in result.output
+
+    def test_ready_error_before_init(self, tmp_cwd: Path, runner: CliRunner) -> None:
+        """tasks ready shows helpful error before init."""
+        result = runner.invoke(main, ["ready"])
+        assert result.exit_code == 1
+        assert "Tasks file not found" in result.output
+
+
+class TestBlocked:
+    """tasks blocked — show blocked tasks with blockers."""
+
+    def test_blocked_shows_blocked_tasks(self, initted: Path, runner: CliRunner) -> None:
+        """blocked shows tasks with unresolved blocks deps."""
+        runner.invoke(main, ["add", "Blocking", "--dep", "TSK-9999:blocks"])
+        result = runner.invoke(main, ["blocked"])
+        assert result.exit_code == 0
+        assert "TSK-0001" in result.output
+        assert "blocked by" in result.output.lower()
+
+    def test_blocked_empty(self, initted: Path, runner: CliRunner) -> None:
+        """blocked shows celebratory message with no blockers."""
+        runner.invoke(main, ["add", "All clear"])
+        result = runner.invoke(main, ["blocked"])
+        assert result.exit_code == 0
+        assert "No blocked tasks" in result.output
+
+    def test_blocked_json(self, initted: Path, runner: CliRunner) -> None:
+        """blocked --json outputs valid JSON with blocker info."""
+        runner.invoke(main, ["add", "Blocked", "--dep", "TSK-9999:blocks"])
+        result = runner.invoke(main, ["blocked", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert len(data) == 1
+        assert data[0]["id"] == "TSK-0001"
+        assert "blockers" in data[0]
+
+    def test_blocked_ignores_relates(self, initted: Path, runner: CliRunner) -> None:
+        """Only blocks-type deps show as blocked."""
+        runner.invoke(main, ["add", "Target"])
+        runner.invoke(main, ["add", "Soft linked", "--dep", "TSK-0001:relates"])
+        result = runner.invoke(main, ["blocked"])
+        assert result.exit_code == 0
+        assert "No blocked tasks" in result.output
+
+    def test_blocked_not_shown_when_blocker_resolved(self, initted: Path, runner: CliRunner) -> None:
+        """Task not shown as blocked when its blocks dep is done/closed."""
+        runner.invoke(main, ["add", "Target"])
+        runner.invoke(main, ["close", "TSK-0001"])
+        runner.invoke(main, ["add", "Unblocked now", "--dep", "TSK-0001:blocks"])
+        result = runner.invoke(main, ["blocked"])
+        assert result.exit_code == 0
+        assert "No blocked tasks" in result.output
+
+    def test_blocked_with_mixed_deps(self, initted: Path, runner: CliRunner) -> None:
+        """Only blocks-type deps matter — relates don't cause blocked."""
+        runner.invoke(main, ["add", "Blocker"])
+        runner.invoke(main, ["add", "Mixed", "--dep", "TSK-0001:relates", "--dep", "TSK-9999:blocks"])
+        result = runner.invoke(main, ["blocked", "--json"])
+        data = json.loads(result.output)
+        assert len(data) == 1
+        assert data[0]["id"] == "TSK-0002"
+
+    def test_blocked_error_before_init(self, tmp_cwd: Path, runner: CliRunner) -> None:
+        """tasks blocked shows helpful error before init."""
+        result = runner.invoke(main, ["blocked"])
+        assert result.exit_code == 1
+        assert "Tasks file not found" in result.output
+
+
+class TestNumericPriorities:
+    """Numeric priority system — p0 to p4."""
+
+    def test_add_with_numeric_priority(self, initted: Path, runner: CliRunner) -> None:
+        """Adding with --priority 1 stores as int 1."""
+        runner.invoke(main, ["add", "Numeric p1", "--priority", "1"])
+        _, tasks = load_tasks_yaml()
+        assert tasks[0]["priority"] == 1
+
+    def test_add_with_named_alias(self, initted: Path, runner: CliRunner) -> None:
+        """Named aliases (urgent, high, etc.) map to correct ints."""
+        runner.invoke(main, ["add", "Critical", "--priority", "critical"])
+        runner.invoke(main, ["add", "Urgent", "--priority", "urgent"])
+        runner.invoke(main, ["add", "High", "--priority", "high"])
+        runner.invoke(main, ["add", "Medium", "--priority", "medium"])
+        runner.invoke(main, ["add", "Low", "--priority", "low"])
+        runner.invoke(main, ["add", "Backlog", "--priority", "backlog"])
+        _, tasks = load_tasks_yaml()
+        priorities = {t["title"]: t["priority"] for t in tasks}
+        assert priorities["Critical"] == 0
+        assert priorities["Urgent"] == 0
+        assert priorities["High"] == 1
+        assert priorities["Medium"] == 2
+        assert priorities["Low"] == 3
+        assert priorities["Backlog"] == 4
+
+    def test_update_priority_numeric(self, initted: Path, runner: CliRunner) -> None:
+        """Updating with --priority 3 stores int."""
+        runner.invoke(main, ["add", "Task"])
+        runner.invoke(main, ["update", "TSK-0001", "--priority", "3"])
+        _, tasks = load_tasks_yaml()
+        assert tasks[0]["priority"] == 3
+
+    def test_display_shows_p0_p4(self, initted: Path, runner: CliRunner) -> None:
+        """Priority displays as p0, p1, p2, p3, p4."""
+        runner.invoke(main, ["add", "P0 task", "--priority", "0"])
+        runner.invoke(main, ["add", "P4 task", "--priority", "4"])
+        runner.invoke(main, ["add", "No prio"])
+        result = runner.invoke(main, ["list"])
+        assert result.exit_code == 0
+        assert "p0" in result.output
+        assert "p4" in result.output
+        assert "-" in result.output or "-" in result.output  # no-prio shows as dash
+
+    def test_priority_sort_order(self, initted: Path, runner: CliRunner) -> None:
+        """Tasks are sorted by priority (0 first, 4 last)."""
+        runner.invoke(main, ["add", "P4", "--priority", "4"])
+        runner.invoke(main, ["add", "P2", "--priority", "2"])
+        runner.invoke(main, ["add", "P0", "--priority", "0"])
+        runner.invoke(main, ["add", "P3", "--priority", "3"])
+        runner.invoke(main, ["add", "P1", "--priority", "1"])
+        result = runner.invoke(main, ["next", "--take", "all"])
+        assert result.exit_code == 0
+        lines = [l for l in result.output.splitlines() if "P" in l]
+        # The order should be P0, P1, P2, P3, P4
+        priorities_in_order = [l.split()[1] for l in lines]
+        assert priorities_in_order == ["p0", "p1", "p2", "p3", "p4"], priorities_in_order
+
+    def test_list_filter_by_numeric_priority(self, initted: Path, runner: CliRunner) -> None:
+        """--priority 1 filters correctly."""
+        runner.invoke(main, ["add", "High task", "--priority", "1"])
+        runner.invoke(main, ["add", "Low task", "--priority", "4"])
+        result = runner.invoke(main, ["list", "--priority", "1", "--json"])
+        tasks = json.loads(result.output)
+        assert len(tasks) == 1
+        assert tasks[0]["title"] == "High task"
+
+    def test_update_with_named_priority_alias(self, initted: Path, runner: CliRunner) -> None:
+        """Update --priority with named alias maps correctly."""
+        runner.invoke(main, ["add", "Task"])
+        runner.invoke(main, ["update", "TSK-0001", "--priority", "urgent"])
+        _, tasks = load_tasks_yaml()
+        assert tasks[0]["priority"] == 0
+
+    def test_invalid_priority_silently_ignored(self, initted: Path, runner: CliRunner) -> None:
+        """Invalid priority value doesn't crash — stores nothing."""
+        runner.invoke(main, ["add", "Task"])
+        runner.invoke(main, ["update", "TSK-0001", "--priority", "999"])
+        _, tasks = load_tasks_yaml()
+        assert "priority" not in tasks[0] or tasks[0]["priority"] is None
+
+    def test_next_filter_priority_numeric(self, initted: Path, runner: CliRunner) -> None:
+        """tasks next --priority 1 filters by numeric priority."""
+        runner.invoke(main, ["add", "P1 task", "--priority", "1"])
+        runner.invoke(main, ["add", "P4 task", "--priority", "4"])
+        result = runner.invoke(main, ["next", "--take", "all", "--priority", "1"])
+        assert result.exit_code == 0
+        assert "P1 task" in result.output
+        assert "P4 task" not in result.output
+
+
+class TestSearch:
+    """Search improvements — --tag-any and --in field filter."""
+
+    def test_list_tag_any_or_logic(self, initted: Path, runner: CliRunner) -> None:
+        """--tag-any matches tasks with ANY of the given tags."""
+        runner.invoke(main, ["add", "Bug task", "--tag", "bug"])
+        runner.invoke(main, ["add", "Feature task", "--tag", "feature"])
+        runner.invoke(main, ["add", "Docs task", "--tag", "docs"])
+        result = runner.invoke(main, ["list", "--tag-any", "bug", "--tag-any", "feature", "--json"])
+        tasks = json.loads(result.output)
+        assert len(tasks) == 2
+        assert tasks[0]["title"] in ("Bug task", "Feature task")
+
+    def test_list_tag_and_tag_any_combined(self, initted: Path, runner: CliRunner) -> None:
+        """--tag (AND) and --tag-any (OR) can be combined."""
+        runner.invoke(main, ["add", "A", "--tag", "bug", "--tag", "urgent"])
+        runner.invoke(main, ["add", "B", "--tag", "bug"])
+        runner.invoke(main, ["add", "C", "--tag", "feature"])
+        # Both --tag bug AND (--tag-any urgent OR feature)
+        result = runner.invoke(main, ["list", "--tag", "bug",
+                                       "--tag-any", "urgent", "--tag-any", "feature", "--json"])
+        tasks = json.loads(result.output)
+        # A has bug+urgent => matches bug AND urgent
+        # B has bug only => matches bug but not urgent/feature
+        assert len(tasks) == 1
+        assert tasks[0]["title"] == "A"
+
+    def test_search_in_title(self, initted: Path, runner: CliRunner) -> None:
+        """--in title scopes search to title field only."""
+        runner.invoke(main, ["add", "Login feature"])
+        runner.invoke(main, ["add", "Fix login bug"])
+        result = runner.invoke(main, ["search", "login", "--in", "title", "--json"])
+        tasks = json.loads(result.output)
+        assert len(tasks) >= 2  # both have "login" in title
+
+    def test_search_in_notes(self, initted: Path, runner: CliRunner) -> None:
+        """--in notes scopes search to notes field only."""
+        runner.invoke(main, ["add", "Task with note", "--notes", "secret info"])
+        runner.invoke(main, ["add", "Other task"])
+        result = runner.invoke(main, ["search", "secret", "--in", "notes", "--json"])
+        tasks = json.loads(result.output)
+        assert len(tasks) == 1
+        assert tasks[0]["title"] == "Task with note"
+
+    def test_search_in_id(self, initted: Path, runner: CliRunner) -> None:
+        """--in id scopes search to task ID."""
+        runner.invoke(main, ["add", "Some task"])
+        result = runner.invoke(main, ["search", "TSK-0001", "--in", "id", "--json"])
+        tasks = json.loads(result.output)
+        assert len(tasks) == 1
+        assert tasks[0]["id"] == "TSK-0001"
+
+    def test_search_in_unknown_field(self, initted: Path, runner: CliRunner) -> None:
+        """--in with unknown field returns empty results."""
+        runner.invoke(main, ["add", "Test task"])
+        result = runner.invoke(main, ["search", "test", "--in", "nonexistent", "--json"])
+        tasks = json.loads(result.output)
+        assert len(tasks) == 0
+
+    def test_search_in_tags_array_field(self, initted: Path, runner: CliRunner) -> None:
+        """--in tags searches within the tags array."""
+        runner.invoke(main, ["add", "Bug task", "--tag", "bug"])
+        runner.invoke(main, ["add", "Feature", "--tag", "feature"])
+        result = runner.invoke(main, ["search", "bug", "--in", "tags", "--json"])
+        tasks = json.loads(result.output)
+        assert len(tasks) == 1
+        assert tasks[0]["title"] == "Bug task"
+
+    def test_tag_any_case_insensitive(self, initted: Path, runner: CliRunner) -> None:
+        """--tag-any is case-insensitive (tags are stored normalized)."""
+        runner.invoke(main, ["add", "Bug task", "--tag", "Bug"])
+        # Tags get normalized to "bug" on add
+        result = runner.invoke(main, ["list", "--tag-any", "BUG", "--json"])
+        tasks = json.loads(result.output)
+        assert len(tasks) == 1, f"--tag-any should be case-insensitive, got {tasks}"
+
+    def test_tag_any_nonexistent(self, initted: Path, runner: CliRunner) -> None:
+        """--tag-any with nonexistent tag returns empty."""
+        runner.invoke(main, ["add", "Task A", "--tag", "bug"])
+        result = runner.invoke(main, ["list", "--tag-any", "nonexistent", "--json"])
+        tasks = json.loads(result.output)
+        assert len(tasks) == 0
+
+    def test_search_in_status(self, initted: Path, runner: CliRunner) -> None:
+        """--in status searches the status field."""
+        runner.invoke(main, ["add", "Active task"])
+        runner.invoke(main, ["update", "TSK-0001", "--status", "in-progress"])
+        result = runner.invoke(main, ["search", "in-progress", "--in", "status", "--json"])
+        tasks = json.loads(result.output)
+        assert len(tasks) >= 1  # at least the one we set
+
+    def test_search_in_priority(self, initted: Path, runner: CliRunner) -> None:
+        """--in priority searches the priority field."""
+        runner.invoke(main, ["add", "Urgent task", "--priority", "0"])
+        result = runner.invoke(main, ["search", "0", "--in", "priority", "--json"])
+        tasks = json.loads(result.output)
+        assert len(tasks) == 1
+        assert tasks[0]["title"] == "Urgent task"
+
+    def test_search_error_before_init(self, tmp_cwd: Path, runner: CliRunner) -> None:
+        """tasks search shows helpful error before init."""
+        result = runner.invoke(main, ["search", "test"])
+        assert result.exit_code == 1
+        assert "Tasks file not found" in result.output
+
+
+# ===========================================================================
 # EDGE CASE TESTS
 # ===========================================================================
 
@@ -1223,6 +1696,10 @@ class TestEdgeCases:
             ["close", "TSK-0001"],
             ["next"],
             ["status"],
+            ["deps", "TSK-0001"],
+            ["ready"],
+            ["blocked"],
+            ["search", "test"],
         ]:
             result = runner.invoke(main, cmd)
             assert result.exit_code == 1, f"{cmd} should exit 1"
