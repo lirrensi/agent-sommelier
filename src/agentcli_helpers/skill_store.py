@@ -1424,12 +1424,49 @@ def cmd_groups_rm(ctx: click.Context, group_slug: str, skill_slugs: tuple[str, .
         console.print("[yellow]{_e('⚠', '!')}[/] None of the specified skills were in the group.")
 
 
+@click.command("organize-helper")
+@click.pass_context
+def cmd_groups_organize_helper(ctx: click.Context) -> None:
+    """List all skills that are not in any group (the todo list)."""
+    store = ctx.obj["store"]
+    ensure_store_initialized(store)
+    index = load_index(store)
+
+    organized_slugs = {s for g in index.get("groups", {}).values() for s in g.get("skills", [])}
+    all_skills = index.get("skills", [])
+    orphans = [s for s in all_skills if s["slug"] not in organized_slugs]
+
+    if not orphans:
+        console.print(f"[green]{_e('✓', '+')}[/] All [bold]{len(all_skills)}[/] skills are organized into groups. Good job!")
+        return
+
+    pinned_slugs = set(index.get("pinned", []))
+    console.print(f"[bold]Ungrouped skills[/] ({len(orphans)} of {len(all_skills)}):")
+    console.print("")
+
+    for i, skill in enumerate(orphans):
+        slug = skill["slug"]
+        desc = _clean_desc(skill.get("description", ""))
+        prefix = _e("⭐ ", "* ") if slug in pinned_slugs else "+ "
+        click.echo(f"{prefix}{slug}")
+        if desc:
+            click.echo("  " + desc)
+        else:
+            click.echo("  <no description>")
+        if i < len(orphans) - 1:
+            click.echo(_e("───", "---"))
+
+    console.print("")
+    console.print(f"[dim]Tip: Add a skill to a group with [bold]skill-store groups add <group> <skill>[/][/]")
+
+
 # Register group subcommands
 cmd_groups.add_command(cmd_groups_create, "create")
 cmd_groups.add_command(cmd_groups_list, "list")
 cmd_groups.add_command(cmd_groups_delete, "delete")
 cmd_groups.add_command(cmd_groups_add, "add")
 cmd_groups.add_command(cmd_groups_rm, "rm")
+cmd_groups.add_command(cmd_groups_organize_helper, "organize-helper")
 
 
 # ---------------------------------------------------------------------------

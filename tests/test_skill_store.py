@@ -1609,6 +1609,49 @@ class TestGroupsRm:
         assert "None of the specified skills" in result.output
 
 
+class TestGroupsOrganizeHelper:
+    """The todo list for organization."""
+
+    def test_organize_helper_shows_orphans(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        create_skill(store, slug="alpha")
+        create_skill(store, slug="beta")
+        cli_run(["groups", "create", "my-group", "My Group", "Desc"], store)
+        cli_run(["groups", "add", "my-group", "alpha"], store)
+        result = cli_run(["groups", "organize-helper"], store)
+        assert result.exit_code == 0
+        assert "beta" in result.output
+        assert "alpha" not in result.output  # organized, so hidden
+
+    def test_organize_helper_empty_when_all_organized(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        create_skill(store, slug="alpha")
+        cli_run(["groups", "create", "my-group", "My Group", "Desc"], store)
+        cli_run(["groups", "add", "my-group", "alpha"], store)
+        result = cli_run(["groups", "organize-helper"], store)
+        assert result.exit_code == 0
+        assert "All" in result.output
+        assert "organized" in result.output
+
+    def test_organize_helper_shows_count(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        for i in range(5):
+            create_skill(store, slug=f"skill-{i}")
+        result = cli_run(["groups", "organize-helper"], store)
+        assert result.exit_code == 0
+        assert "5 of 5" in result.output or "(5 of 5)" in result.output
+
+    def test_organize_helper_fails_before_init(self, tmp_path):
+        store = tmp_path / "store"
+        store.mkdir(parents=True)
+        result = cli_run(["groups", "organize-helper"], store)
+        assert result.exit_code != 0
+        assert "init" in result.output.lower()
+
+
 class TestSyncGcGroups:
     """Sync should clean up ghost slugs in groups."""
 
