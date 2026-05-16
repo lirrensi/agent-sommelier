@@ -6,6 +6,7 @@ Every line, every branch, every edge case. No mercy.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -1006,6 +1007,114 @@ class TestSearch:
         assert "init" in result.output.lower()
 
 
+class TestSearchWithRg:
+    """RG-powered content search — deeper, faster, prettier."""
+
+    @staticmethod
+    def _has_rg() -> bool:
+        """Check if rg is available on this test system."""
+        import shutil
+        return shutil.which("rg") is not None
+
+    def test_content_only_match_via_rg(self, tmp_path):
+        """Content-only matches (not in name/desc) should appear when rg available."""
+        store = tmp_path / "store"
+        init_store(store)
+        create_skill(store, slug="my-tool", name="My Tool", desc="Does stuff")
+        # Add unique content not in name or description
+        skill_md = store / "skills" / "my-tool" / "SKILL.md"
+        skill_md.write_text(
+            skill_md.read_text(encoding="utf-8")
+            + "\nThis line has a UNIQU3-C0NT3NT-Term.\n",
+            encoding="utf-8",
+        )
+        result = cli_run(["search", "UNIQU3-C0NT3NT-Term"], store)
+        assert result.exit_code == 0
+        assert "my-tool" in result.output
+        if self._has_rg():
+            assert "content" in result.output.lower()
+
+    def test_json_output_includes_rg_data(self, tmp_path):
+        """JSON search output should include rg_used and match details."""
+        store = tmp_path / "store"
+        init_store(store)
+        create_skill(store, slug="my-tool", name="My Tool", desc="Does stuff")
+        # Add content that's searchable
+        skill_md = store / "skills" / "my-tool" / "SKILL.md"
+        skill_md.write_text(
+            skill_md.read_text(encoding="utf-8")
+            + "\nSome Playwright-related workflow.\n",
+            encoding="utf-8",
+        )
+        result = cli_run(["search", "Playwright", "--json"], store)
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+
+        if self._has_rg():
+            assert data["rg_used"] is True
+            assert len(data["skills"]) > 0
+            # my-tool should appear as a content match
+            found = False
+            for skill in data["skills"]:
+                if skill["slug"] == "my-tool":
+                    assert skill["match_source"] == "content"
+                    assert skill["match_count"] > 0
+                    assert len(skill["matches"]) > 0
+                    assert "Playwright" in skill["matches"][0]["content"]
+                    found = True
+                    break
+            assert found, "my-tool should appear in search results"
+        else:
+            assert data["rg_used"] is False
+
+    def test_json_rg_fields_structure(self, tmp_path):
+        """JSON output should have the correct structure when rg used."""
+        store = tmp_path / "store"
+        init_store(store)
+        create_skill(store, slug="alpha", name="Alpha", desc="Does alpha stuff")
+        result = cli_run(["search", "alpha", "--json"], store)
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "query" in data
+        assert "results" in data
+        assert "rg_used" in data
+        assert "skills" in data
+        if data["skills"]:
+            skill = data["skills"][0]
+            assert "slug" in skill
+            assert "name" in skill
+            assert "description" in skill
+            assert "match_source" in skill
+            assert "match_count" in skill
+            # matches field should exist when there are file matches
+            assert "matches" in skill
+
+    def test_index_match_ranked_before_content_match(self, tmp_path):
+        """Index matches (name/desc) should sort before content-only matches."""
+        store = tmp_path / "store"
+        init_store(store)
+        # Skill with name match
+        create_skill(store, slug="name-match", name="Does Terraform", desc="Utility")
+        # Skill with only content match (add unique content not in metadata)
+        create_skill(store, slug="content-only", name="Other Tool", desc="Does other")
+        skill_md = store / "skills" / "content-only" / "SKILL.md"
+        skill_md.write_text(
+            skill_md.read_text(encoding="utf-8")
+            + "\nUses Terraform for provisioning.\n",
+            encoding="utf-8",
+        )
+        result = cli_run(["search", "Terraform"], store)
+        assert result.exit_code == 0
+        assert "name-match" in result.output
+        assert "content-only" in result.output
+        # Name match should appear before content-only match
+        name_pos = result.output.index("name-match")
+        content_pos = result.output.index("content-only")
+        assert name_pos < content_pos, (
+            "Index match should sort before content-only match"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Edge cases & error handling
 # ---------------------------------------------------------------------------
@@ -1166,7 +1275,7 @@ class TestEdgeCases:
 
     def test_subcommand_help(self, tmp_path):
         """Subcommand help should work."""
-        for cmd in ["init", "sync", "create-new", "load", "list", "pin", "unpin"]:
+        for cmd in ["init", "sync", "create-new", "load", "list", "pin", "unpin", "version", "help"]:
             runner = CliRunner()
             result = runner.invoke(cli, [cmd, "--help"])
             assert result.exit_code == 0, f"{cmd} --help failed"
@@ -1279,3 +1388,128 @@ class TestEdgeCases:
         index = read_index(store)
         expected_keys = {"version", "pinned", "skills", "stats"}
         assert set(index.keys()) == expected_keys
+
+
+# ---------------------------------------------------------------------------
+# version & help
+# ---------------------------------------------------------------------------
+
+
+class TestVersionAndHelp:
+    """--version, version cmd, no-args help, help cmd — the welcome mat."""
+
+    def test_version_flag(self):
+        """--version should print the version string."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["--version"])
+        assert result.exit_code == 0
+        assert "skill-store v" in result.output
+
+    def test_version_subcommand(self):
+        """skill-store version should print the version string."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["version"])
+        assert result.exit_code == 0
+        assert "skill-store v" in result.output
+
+    def test_version_flag_matches_subcommand(self):
+        """--version and version subcommand should be consistent."""
+        runner = CliRunner()
+        r1 = runner.invoke(cli, ["--version"])
+        r2 = runner.invoke(cli, ["version"])
+        assert r1.output.strip() == r2.output.strip()
+
+    def test_no_args_shows_help(self):
+        """skill-store with no args should show help text."""
+        runner = CliRunner()
+        result = runner.invoke(cli, [])
+        # Click shows help but may exit 2 depending on version
+        assert result.exit_code in (0, 2), f"Expected 0 or 2, got {result.exit_code}"
+        assert "Usage:" in result.output
+        assert "skill-store" in result.output.lower()
+
+    def test_no_args_help_equivalent_to_help_flag(self):
+        """No-args output should be same as --help."""
+        runner = CliRunner()
+        r1 = runner.invoke(cli, [])
+        r2 = runner.invoke(cli, ["--help"])
+        assert r1.output.strip() == r2.output.strip()
+
+    def test_help_subcommand(self):
+        """skill-store help should show the general help."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["help"])
+        assert result.exit_code == 0
+        assert "Usage:" in result.output
+        assert "skill-store" in result.output.lower()
+
+    def test_help_subcommand_shows_same_as_help_flag(self):
+        """skill-store help should be same as --help."""
+        runner = CliRunner()
+        r1 = runner.invoke(cli, ["help"])
+        r2 = runner.invoke(cli, ["--help"])
+        assert r1.output.strip() == r2.output.strip()
+
+    def test_help_for_specific_command(self):
+        """skill-store help <cmd> should show that command's help."""
+        for cmd in ["init", "sync", "load", "list", "pin", "version", "help"]:
+            runner = CliRunner()
+            result = runner.invoke(cli, ["help", cmd])
+            assert result.exit_code == 0, f"help {cmd} failed"
+            assert "Usage:" in result.output
+            assert cmd in result.output
+
+    def test_help_for_nonexistent_command(self):
+        """skill-store help <bad> should error with a message."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["help", "nope-nope-nope"])
+        assert result.exit_code != 0
+        assert "Unknown command" in result.output
+
+    def test_help_subcommand_matches_flag(self):
+        """help <cmd> output matches --help output for that command."""
+        runner = CliRunner()
+        for cmd in ["init", "sync", "load", "list"]:
+            r_flag = runner.invoke(cli, [cmd, "--help"])
+            r_help = runner.invoke(cli, ["help", cmd])
+            assert r_flag.output.strip() == r_help.output.strip(), (
+                f"Mismatch for '{cmd}': --help vs help"
+            )
+
+    def test_version_does_not_require_store(self):
+        """version should work without a store (no init needed)."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["version"])
+        assert result.exit_code == 0
+
+    def test_help_does_not_require_store(self):
+        """help should work without a store (no init needed)."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["help"])
+        assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# Package version consistency
+# ---------------------------------------------------------------------------
+
+
+class TestPackageVersion:
+    """__version__ must match pyproject.toml exactly."""
+
+    def test_version_matches_pyproject_toml(self):
+        """The dynamic __version__ must match pyproject.toml."""
+        from agentcli_helpers import __version__
+
+        pyproject = (
+            Path(__file__).resolve().parent.parent / "pyproject.toml"
+        )
+        text = pyproject.read_text(encoding="utf-8")
+        match = re.search(
+            r'^version\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE
+        )
+        assert match is not None, "Could not find version in pyproject.toml"
+        expected = match.group(1)
+        assert (
+            __version__ == expected
+        ), f"__version__={__version__!r} != pyproject={expected!r}"

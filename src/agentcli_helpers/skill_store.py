@@ -4,6 +4,9 @@ Manage a folder-based registry of agent skills at ~/.skill-store/.
 Load, list, pin, create, and sync skills with automatic git backups.
 
 Usage:
+    skill-store                   Show help (no args = help)
+    skill-store --version         Show version
+    skill-store --help            Show this help
     skill-store init              Scaffold store + git init
     skill-store sync              Scan skills, rebuild index, git commit
     skill-store create-new        Interactive skill scaffold
@@ -11,6 +14,8 @@ Usage:
     skill-store list [--page N]   Paginated listing (pinned first)
     skill-store pin <slug>        Pin a skill to top of list
     skill-store unpin <slug>      Unpin a skill
+    skill-store version           Show version
+    skill-store help [command]    Show help for a command
 """
 
 from __future__ import annotations
@@ -32,6 +37,8 @@ from rich.console import Console
 from rich.table import Table
 from rich.tree import Tree
 from rich.syntax import Syntax
+
+from agentcli_helpers import __version__
 
 # ---------------------------------------------------------------------------
 # JSON helper
@@ -715,6 +722,73 @@ def cmd_list(ctx: click.Context, page: int, json: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# RG helpers for content search
+# ---------------------------------------------------------------------------
+
+
+def _rg_available() -> bool:
+    """Check if ripgrep (rg) is available on the system PATH."""
+    return shutil.which("rg") is not None
+
+
+def _rg_search_json(skills_dir: Path, query: str) -> dict[str, dict[str, Any]]:
+    """Search skill file contents via ``rg --json``.
+
+    Returns a dict keyed by slug::
+
+        {"my-tool": {"slug": "my-tool", "matches": [{"file": ..., "line": ..., "content": ...}]}}
+    """
+    try:
+        result = subprocess.run(
+            ["rg", "--json", "-i", query, str(skills_dir.resolve())],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        return {}
+
+    if result.returncode not in (0, 1):
+        return {}
+
+    resolved = skills_dir.resolve()
+    matches_by_slug: dict[str, dict[str, Any]] = {}
+
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        if obj.get("type") != "match":
+            continue
+
+        data = obj.get("data", {})
+        path_text = data.get("path", {}).get("text", "")
+
+        try:
+            rel = Path(path_text).relative_to(resolved)
+            slug = rel.parts[0]
+        except (ValueError, IndexError):
+            continue
+
+        if slug not in matches_by_slug:
+            matches_by_slug[slug] = {"slug": slug, "matches": []}
+
+        match_info = {
+            "file": str(rel),
+            "line": data.get("line_number", 0),
+            "content": data.get("lines", {}).get("text", "").rstrip("\n"),
+        }
+        matches_by_slug[slug]["matches"].append(match_info)
+
+    return matches_by_slug
+
+
+# ---------------------------------------------------------------------------
 # COMMAND: search
 # ---------------------------------------------------------------------------
 
@@ -724,7 +798,12 @@ def cmd_list(ctx: click.Context, page: int, json: bool) -> None:
 @click.option("--json/--no-json", "-j", default=False, help="Output in JSON format")
 @click.pass_context
 def cmd_search(ctx: click.Context, query: str, json: bool) -> None:
-    """Full-text search across skill names and descriptions."""
+    """Full-text search across skill metadata and file contents.
+
+    Searches skill names and descriptions from the index. When ripgrep
+    (rg) is installed, also searches the actual SKILL.md and other files
+    inside each skill directory — giving you deeper, more accurate results.
+    """
     store = ctx.obj["store"]
     ensure_store_initialized(store)
     index = load_index(store)
@@ -738,49 +817,146 @@ def cmd_search(ctx: click.Context, query: str, json: bool) -> None:
 
     import re
 
+    # 1 --- Index-based search (name + description) ---------------------------
     pattern = re.compile(re.escape(query), re.IGNORECASE)
-    results = []
+    index_results: list[dict[str, Any]] = []
     for skill in index["skills"]:
         name_match = bool(pattern.search(skill.get("name", "")))
         desc_match = bool(pattern.search(skill.get("description", "")))
         if name_match or desc_match:
-            results.append({
+            index_results.append({
                 "slug": skill["slug"],
                 "name": skill["name"],
-                "description": skill["description"],
-                "matched_field": "name" if name_match else "description",
+                "description": skill.get("description", ""),
+                "match_source": "name" if name_match else "description",
+                "match_count": 0,
+                "matches": [],
             })
 
-    if not results:
+    # 2 --- Content search via rg --json (when available) ---------------------
+    rg_used = False
+    rg_data: dict[str, dict[str, Any]] = {}
+    skills_dir = store / SKILLS_DIR_NAME
+    if _rg_available() and skills_dir.is_dir():
+        rg_data = _rg_search_json(skills_dir, query)
+        rg_used = bool(rg_data)
+
+    # 3 --- Merge results ----------------------------------------------------
+    index_slugs = {r["slug"] for r in index_results}
+
+    # Enrich index results with rg match data
+    for r in index_results:
+        if r["slug"] in rg_data:
+            r["matches"] = rg_data[r["slug"]]["matches"]
+            r["match_count"] = len(r["matches"])
+
+    # Add content-only results (found by rg, not by metadata)
+    for slug, data in rg_data.items():
+        if slug not in index_slugs:
+            name = slug
+            desc = ""
+            for s in index["skills"]:
+                if s["slug"] == slug:
+                    name = s["name"]
+                    desc = s.get("description", "")
+                    break
+            index_results.append({
+                "slug": slug,
+                "name": name,
+                "description": desc,
+                "match_source": "content",
+                "match_count": len(data["matches"]),
+                "matches": data["matches"],
+            })
+
+    # Sort: name → description → content; alphabetical within groups
+    _source_rank = {"name": 0, "description": 1, "content": 2}
+    index_results.sort(
+        key=lambda r: (_source_rank.get(r["match_source"], 99), r["slug"])
+    )
+
+    # 4 --- Output -----------------------------------------------------------
+    if not index_results:
         if json:
-            click.echo(_json_dumps({"query": query, "results": 0, "skills": []}))
+            click.echo(_json_dumps({
+                "query": query, "results": 0, "rg_used": rg_used, "skills": [],
+            }))
         else:
-            console.print(f"[yellow]⚠[/] No skills match [bold]'{query}'[/].")
+            msg = f"[yellow]⚠[/] No skills match [bold]'{query}'[/]."
+            if not rg_used and _rg_available():
+                msg += " (searched metadata only, no content matches)"
+            elif not _rg_available():
+                msg += " Install ripgrep (rg) for content-level search."
+            console.print(msg)
         return
 
-    # Sort: name matches before description matches, then alpha
-    results.sort(key=lambda r: (0 if r["matched_field"] == "name" else 1, r["slug"]))
-
     if json:
-        click.echo(_json_dumps({
+        result_data: dict[str, Any] = {
             "query": query,
-            "results": len(results),
-            "skills": results,
-        }))
+            "results": len(index_results),
+            "rg_used": rg_used,
+            "skills": [],
+        }
+        for r in index_results:
+            entry: dict[str, Any] = {
+                "slug": r["slug"],
+                "name": r["name"],
+                "description": r["description"],
+                "match_source": r["match_source"],
+                "match_count": r["match_count"],
+            }
+            if r["matches"]:
+                entry["matches"] = r["matches"]
+            result_data["skills"].append(entry)
+        click.echo(_json_dumps(result_data))
     else:
+        pinned_slugs = index.get("pinned", [])
         table = Table(
-            title=f"Search results for '{query}' ({len(results)} found)",
+            title=f"Search results for '{query}' ({len(index_results)} found)"
+            + (" [dim]rg[/]" if rg_used else ""),
             box=None,
             padding=(0, 1),
         )
+        table.add_column("", width=2, no_wrap=True)
         table.add_column("Slug", style="bold", no_wrap=True)
         table.add_column("Name")
+        table.add_column("Match", no_wrap=True)
         table.add_column("Description")
 
-        for r in results:
-            table.add_row(r["slug"], r["name"], r["description"])
+        for r in index_results:
+            pin_mark = "⭐" if r["slug"] in pinned_slugs else " "
+
+            source = r["match_source"]
+            if source == "name":
+                badge = "[cyan]name[/]"
+            elif source == "description":
+                badge = "[blue]desc[/]"
+            else:
+                badge = "[green]content[/]"
+
+            if r["match_count"]:
+                badge += f" [dim]({r['match_count']})[/]"
+
+            table.add_row(
+                pin_mark,
+                r["slug"],
+                r["name"],
+                badge,
+                r["description"],
+            )
 
         console.print(table)
+
+        if rg_used:
+            console.print(
+                "\n   [dim]🔍 ripgrep searched file contents —"
+                " use [bold]--json[/] for full match details[/]"
+            )
+        elif not _rg_available():
+            console.print(
+                "\n   [dim]💡 Install [bold]ripgrep[/] ([bold]rg[/])"
+                " for deeper content-level search[/]"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -843,11 +1019,67 @@ def cmd_unpin(ctx: click.Context, slug: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# COMMAND: version
+# ---------------------------------------------------------------------------
+
+
+@click.command()
+@click.pass_context
+def cmd_version(ctx: click.Context) -> None:
+    """Show the skill-store version."""
+    click.echo(f"skill-store v{__version__}")
+
+
+# ---------------------------------------------------------------------------
+# COMMAND: help
+# ---------------------------------------------------------------------------
+
+
+@click.command()
+@click.argument("command", required=False)
+@click.pass_context
+def cmd_help(ctx: click.Context, command: str | None) -> None:
+    """Show help for a command, or general help."""
+    if command:
+        cmd = cli.get_command(ctx, command)
+        if cmd is None:
+            console.print(f"[red]✗[/] Unknown command: [bold]{command}[/]")
+            suggestions = [
+                c for c in cli.list_commands(ctx) if command in c
+            ]
+            if suggestions:
+                console.print(
+                    f"   Did you mean: {', '.join(suggestions)}?"
+                )
+            else:
+                console.print(
+                    "   Run [bold]skill-store --help[/] to see available commands."
+                )
+            sys.exit(1)
+        # Use the parent (cli) context so help shows correct usage prefix
+        with click.Context(
+            cmd, info_name=command, parent=ctx.parent
+        ) as cmd_ctx:
+            click.echo(cmd.get_help(cmd_ctx))
+    else:
+        # Show the root group help via the parent context
+        if ctx.parent is not None:
+            click.echo(cli.get_help(ctx.parent))
+        else:
+            click.echo(cli.get_help(ctx))
+
+
+# ---------------------------------------------------------------------------
 # CLI Entry Point
 # ---------------------------------------------------------------------------
 
 
-@click.group()
+@click.group(no_args_is_help=True)
+@click.version_option(
+    version=__version__,
+    prog_name="skill-store",
+    message="%(prog)s v%(version)s",
+)
 @click.option(
     "--store",
     "-s",
@@ -873,6 +1105,8 @@ cli.add_command(cmd_list, "list")
 cli.add_command(cmd_search, "search")
 cli.add_command(cmd_pin, "pin")
 cli.add_command(cmd_unpin, "unpin")
+cli.add_command(cmd_version, "version")
+cli.add_command(cmd_help, "help")
 
 
 def main() -> None:
