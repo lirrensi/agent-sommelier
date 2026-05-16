@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -640,6 +641,71 @@ def cmd_preview(ctx: click.Context, slug: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Display helpers
+# ---------------------------------------------------------------------------
+
+
+def _clean_desc(text: str) -> str:
+    """Normalize a description: collapse newlines and excessive whitespace."""
+    if not text:
+        return ""
+    return " ".join(text.split())
+
+
+def _display_skills_list(
+    title: str,
+    skills: list[dict[str, Any]],
+    pinned_slugs: set[str],
+    *,
+    page_info: str | None = None,
+) -> None:
+    """Print a clean, lightweight skill listing.
+
+    Format::
+
+        ⭐ slug
+          Normalized description...
+        ───
+          slug
+          Normalized description...
+        ───
+    """
+    max_width = min(shutil.get_terminal_size(fallback=(100, 24)).columns, 100)
+    desc_indent = 2
+
+    click.echo("")
+    click.echo(title)
+
+    for i, skill in enumerate(skills):
+        slug = skill["slug"]
+        desc = _clean_desc(skill.get("description", ""))
+
+        # Slug line: "⭐ slug" or "+ slug"
+        prefix = "⭐ " if skill["slug"] in pinned_slugs else "+ "
+        click.echo(f"{prefix}{slug}")
+
+        # Description wrapped and indented
+        if desc:
+            wrapped_lines = textwrap.wrap(
+                desc,
+                width=max_width - desc_indent,
+                break_long_words=False,
+            )
+            for line in wrapped_lines:
+                click.echo(" " * desc_indent + line)
+        else:
+            click.echo(" " * desc_indent + "<no description>")
+
+        # Thin separator ("---")
+        if i < len(skills) - 1:
+            click.echo("---")
+
+    if page_info:
+        click.echo("")
+        click.echo(f"  {page_info}")
+
+
+# ---------------------------------------------------------------------------
 # COMMAND: list
 # ---------------------------------------------------------------------------
 
@@ -680,14 +746,14 @@ def cmd_list(ctx: click.Context, page: int, json: bool) -> None:
             console.print("   Create one with [bold]skill-store create-new[/].")
         return
 
-    pinned_slugs = index.get("pinned", [])
+    pinned_slugs = set(index.get("pinned", []))
 
     if json:
         result = {
             "page": page,
             "total_pages": total_pages,
             "total": total,
-            "pinned": pinned_slugs,
+            "pinned": list(pinned_slugs),
             "skills": [
                 {
                     "slug": s["slug"],
@@ -700,25 +766,15 @@ def cmd_list(ctx: click.Context, page: int, json: bool) -> None:
         }
         click.echo(_json_dumps(result))
     else:
-        table = Table(
-            title=f"Skills — Page {page}/{total_pages} ({total} total)",
-            box=None,
-            padding=(0, 1),
-        )
-        table.add_column("", width=2, no_wrap=True)
-        table.add_column("Slug", style="bold", no_wrap=True)
-        table.add_column("Name")
-        table.add_column("Description")
-
-        for skill in page_skills:
-            pin_mark = "⭐" if skill["slug"] in pinned_slugs else " "
-            table.add_row(pin_mark, skill["slug"], skill["name"], skill["description"])
-
-        console.print(table)
-
+        page_info = None
         if total_pages > 1:
-            console.print()
-            console.print(f"   [dim]Page {page} / {total_pages}  —  use [bold]--page N[/] to navigate[/]")
+            page_info = f"Page {page} / {total_pages}  —  use --page N to navigate"
+        _display_skills_list(
+            f"Skills — Page {page}/{total_pages} ({total} total)",
+            page_skills,
+            pinned_slugs,
+            page_info=page_info,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -742,7 +798,7 @@ def _rg_search_json(skills_dir: Path, query: str) -> dict[str, dict[str, Any]]:
         result = subprocess.run(
             ["rg", "--json", "-i", query, str(skills_dir.resolve())],
             capture_output=True,
-            text=True,
+            text=False,
             timeout=30,
         )
     except (subprocess.SubprocessError, FileNotFoundError, OSError):
@@ -754,7 +810,8 @@ def _rg_search_json(skills_dir: Path, query: str) -> dict[str, dict[str, Any]]:
     resolved = skills_dir.resolve()
     matches_by_slug: dict[str, dict[str, Any]] = {}
 
-    for line in result.stdout.splitlines():
+    stdout = result.stdout.decode("utf-8", errors="replace") if result.stdout else ""
+    for line in stdout.splitlines():
         line = line.strip()
         if not line:
             continue
@@ -910,53 +967,41 @@ def cmd_search(ctx: click.Context, query: str, json: bool) -> None:
             result_data["skills"].append(entry)
         click.echo(_json_dumps(result_data))
     else:
-        pinned_slugs = index.get("pinned", [])
-        table = Table(
-            title=f"Search results for '{query}' ({len(index_results)} found)"
-            + (" [dim]rg[/]" if rg_used else ""),
-            box=None,
-            padding=(0, 1),
-        )
-        table.add_column("", width=2, no_wrap=True)
-        table.add_column("Slug", style="bold", no_wrap=True)
-        table.add_column("Name")
-        table.add_column("Match", no_wrap=True)
-        table.add_column("Description")
+        pinned_slugs = set(index.get("pinned", []))
 
+        # Build display entries with match info in description
+        display_skills: list[dict[str, Any]] = []
         for r in index_results:
-            pin_mark = "⭐" if r["slug"] in pinned_slugs else " "
-
             source = r["match_source"]
             if source == "name":
-                badge = "[cyan]name[/]"
+                badge = "name"
             elif source == "description":
-                badge = "[blue]desc[/]"
+                badge = "desc"
             else:
-                badge = "[green]content[/]"
+                badge = "content"
 
-            if r["match_count"]:
-                badge += f" [dim]({r['match_count']})[/]"
+            cnt = f" ({r['match_count']})" if r["match_count"] else ""
+            tag = f"[{badge}{cnt}]"
 
-            table.add_row(
-                pin_mark,
-                r["slug"],
-                r["name"],
-                badge,
-                r["description"],
-            )
+            desc = r.get("description", "") or ""
+            if tag:
+                desc = f"{tag} {desc}" if desc else tag
 
-        console.print(table)
+            display_skills.append({
+                "slug": r["slug"],
+                "description": desc,
+            })
+
+        title = f"Search: '{query}' ({len(index_results)} found)"
+        if rg_used:
+            title += " \u00b7 rg"
+
+        _display_skills_list(title, display_skills, pinned_slugs)
 
         if rg_used:
-            console.print(
-                "\n   [dim]🔍 ripgrep searched file contents —"
-                " use [bold]--json[/] for full match details[/]"
-            )
+            click.echo("  ripgrep searched file contents -- use --json for full match details")
         elif not _rg_available():
-            console.print(
-                "\n   [dim]💡 Install [bold]ripgrep[/] ([bold]rg[/])"
-                " for deeper content-level search[/]"
-            )
+            click.echo("  Install ripgrep (rg) for deeper content-level search")
 
 
 # ---------------------------------------------------------------------------
