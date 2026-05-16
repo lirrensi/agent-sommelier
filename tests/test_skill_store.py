@@ -82,11 +82,14 @@ class TestInit:
         store = tmp_path / "store"
         init_store(store)
         index = read_index(store)
-        assert index["version"] == 1
+        assert index["version"] == 2
         assert index["pinned"] == []
         assert index["skills"] == []
+        assert index["groups"] == {}
         assert index["stats"]["total"] == 0
         assert index["stats"]["pinned"] == 0
+        assert index["stats"]["groups"] == 0
+        assert index["stats"]["organized"] == 0
         assert index["stats"]["updated_at"] == ""
 
     def test_init_is_idempotent(self, tmp_path):
@@ -424,6 +427,8 @@ class TestSync:
         index = read_index(store)
         assert index["stats"]["total"] == 2
         assert index["stats"]["pinned"] == 1
+        assert index["stats"]["groups"] == 0
+        assert index["stats"]["organized"] == 0
         assert index["stats"]["updated_at"] != ""
 
     def test_sync_fails_if_not_initialized(self, tmp_path):
@@ -596,7 +601,8 @@ class TestList:
         create_skill(store, slug="alpha")
         cli_run(["pin", "alpha"], store)
         result = cli_run(["list"], store)
-        assert "⭐" in result.output
+        # In TTY: ⭐ ; in non-TTY fallback: *
+        assert "⭐" in result.output or "* alpha" in result.output
 
     def test_list_no_pin_marker_for_unpinned(self, tmp_path):
         store = tmp_path / "store"
@@ -941,7 +947,7 @@ class TestSearch:
         result = cli_run(["search", "BETA"], store)
         assert result.exit_code == 0
         assert "beta" in result.output
-        assert "Beta Utility" in result.output
+        assert "Does beta" in result.output
 
     def test_search_finds_by_description_case_insensitive(self, tmp_path):
         store = tmp_path / "store"
@@ -951,7 +957,7 @@ class TestSearch:
         result = cli_run(["search", "postgresql"], store)
         assert result.exit_code == 0
         assert "db-util" in result.output
-        assert "DB Utility" in result.output
+        assert "PostgreSQL manager" in result.output
 
     def test_search_shows_correct_match_count(self, tmp_path):
         store = tmp_path / "store"
@@ -1132,6 +1138,9 @@ class TestEdgeCases:
             ["list"],
             ["pin", "x"],
             ["unpin", "x"],
+            ["status"],
+            ["groups", "list"],
+            ["groups", "create", "g", "N", "D"],
         ]
         for args in commands:
             result = cli_run(args, store)
@@ -1275,7 +1284,7 @@ class TestEdgeCases:
 
     def test_subcommand_help(self, tmp_path):
         """Subcommand help should work."""
-        for cmd in ["init", "sync", "create-new", "load", "list", "pin", "unpin", "version", "help"]:
+        for cmd in ["init", "sync", "create-new", "load", "list", "pin", "unpin", "groups", "status", "version", "help"]:
             runner = CliRunner()
             result = runner.invoke(cli, [cmd, "--help"])
             assert result.exit_code == 0, f"{cmd} --help failed"
@@ -1386,8 +1395,294 @@ class TestEdgeCases:
         init_store(store)
         create_skill(store, slug="alpha")
         index = read_index(store)
-        expected_keys = {"version", "pinned", "skills", "stats"}
+        expected_keys = {"version", "pinned", "skills", "groups", "stats"}
         assert set(index.keys()) == expected_keys
+
+
+# ---------------------------------------------------------------------------
+# groups
+# ---------------------------------------------------------------------------
+
+
+class TestGroupsCreate:
+    """Birth of organization."""
+
+    def test_create_group(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        result = cli_run(["groups", "create", "github", "GitHub", "GitHub tools"], store)
+        assert result.exit_code == 0, f"create failed: {result.output}"
+        index = read_index(store)
+        assert "github" in index["groups"]
+        assert index["groups"]["github"]["name"] == "GitHub"
+        assert index["groups"]["github"]["description"] == "GitHub tools"
+        assert index["groups"]["github"]["skills"] == []
+
+    def test_create_group_rejects_invalid_slug(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        result = cli_run(["groups", "create", "Hello World", "Name", "Desc"], store)
+        assert result.exit_code != 0
+        assert "kebab-case" in result.output.lower()
+
+    def test_create_group_rejects_duplicate(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        cli_run(["groups", "create", "github", "GitHub", "Desc"], store)
+        result = cli_run(["groups", "create", "github", "GitHub2", "Desc2"], store)
+        assert result.exit_code != 0
+        assert "already exists" in result.output.lower()
+
+    def test_create_group_rejects_empty_name(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        result = cli_run(["groups", "create", "my-group", "", "Desc"], store)
+        assert result.exit_code != 0
+        assert "cannot be empty" in result.output.lower()
+
+    def test_create_group_rejects_empty_description(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        result = cli_run(["groups", "create", "my-group", "Name", ""], store)
+        assert result.exit_code != 0
+        assert "cannot be empty" in result.output.lower()
+
+    def test_create_group_updates_stats(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        cli_run(["groups", "create", "github", "GitHub", "Desc"], store)
+        index = read_index(store)
+        assert index["stats"]["groups"] == 1
+
+
+class TestGroupsList:
+    """Survey the landscape."""
+
+    def test_list_empty_groups(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        result = cli_run(["groups", "list"], store)
+        assert result.exit_code == 0
+        assert "No groups" in result.output
+
+    def test_list_groups_with_skills(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        create_skill(store, slug="alpha")
+        cli_run(["groups", "create", "my-group", "My Group", "A group"], store)
+        cli_run(["groups", "add", "my-group", "alpha"], store)
+        result = cli_run(["groups", "list"], store)
+        assert result.exit_code == 0
+        assert "my-group" in result.output
+        assert "alpha" in result.output
+        assert "1" in result.output  # skill count
+
+
+class TestGroupsDelete:
+    """Pruning the tree."""
+
+    def test_delete_group(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        cli_run(["groups", "create", "github", "GitHub", "Desc"], store)
+        result = cli_run(["groups", "delete", "github"], store, input="y\n")
+        assert result.exit_code == 0
+        index = read_index(store)
+        assert "github" not in index["groups"]
+
+    def test_delete_group_not_found(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        result = cli_run(["groups", "delete", "nope"], store, input="y\n")
+        assert result.exit_code != 0
+        assert "not found" in result.output.lower()
+
+    def test_delete_group_updates_stats(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        cli_run(["groups", "create", "github", "GitHub", "Desc"], store)
+        cli_run(["groups", "delete", "github"], store, input="y\n")
+        index = read_index(store)
+        assert index["stats"]["groups"] == 0
+
+
+class TestGroupsAdd:
+    """Populating groups."""
+
+    def test_add_skill_to_group(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        create_skill(store, slug="alpha")
+        cli_run(["groups", "create", "my-group", "My Group", "Desc"], store)
+        result = cli_run(["groups", "add", "my-group", "alpha"], store)
+        assert result.exit_code == 0
+        index = read_index(store)
+        assert "alpha" in index["groups"]["my-group"]["skills"]
+        assert index["stats"]["organized"] == 1
+
+    def test_add_multiple_skills(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        create_skill(store, slug="alpha")
+        create_skill(store, slug="beta")
+        cli_run(["groups", "create", "my-group", "My Group", "Desc"], store)
+        result = cli_run(["groups", "add", "my-group", "alpha", "beta"], store)
+        assert result.exit_code == 0
+        index = read_index(store)
+        assert index["groups"]["my-group"]["skills"] == ["alpha", "beta"]
+        assert index["stats"]["organized"] == 2
+
+    def test_add_skips_missing_skill(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        create_skill(store, slug="alpha")
+        cli_run(["groups", "create", "my-group", "My Group", "Desc"], store)
+        result = cli_run(["groups", "add", "my-group", "alpha", "nope"], store)
+        assert result.exit_code == 0
+        index = read_index(store)
+        assert "alpha" in index["groups"]["my-group"]["skills"]
+        assert "nope" not in index["groups"]["my-group"]["skills"]
+
+    def test_add_skips_duplicate(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        create_skill(store, slug="alpha")
+        cli_run(["groups", "create", "my-group", "My Group", "Desc"], store)
+        cli_run(["groups", "add", "my-group", "alpha"], store)
+        result = cli_run(["groups", "add", "my-group", "alpha"], store)
+        assert result.exit_code == 0
+        assert "already in group" in result.output.lower()
+        index = read_index(store)
+        assert index["groups"]["my-group"]["skills"].count("alpha") == 1
+
+    def test_add_to_nonexistent_group(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        create_skill(store, slug="alpha")
+        result = cli_run(["groups", "add", "nope", "alpha"], store)
+        assert result.exit_code != 0
+        assert "not found" in result.output.lower()
+
+
+class TestGroupsRm:
+    """Evicting skills from groups."""
+
+    def test_rm_skill_from_group(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        create_skill(store, slug="alpha")
+        cli_run(["groups", "create", "my-group", "My Group", "Desc"], store)
+        cli_run(["groups", "add", "my-group", "alpha"], store)
+        result = cli_run(["groups", "rm", "my-group", "alpha"], store)
+        assert result.exit_code == 0
+        index = read_index(store)
+        assert "alpha" not in index["groups"]["my-group"]["skills"]
+        assert index["stats"]["organized"] == 0
+
+    def test_rm_multiple_skills(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        create_skill(store, slug="alpha")
+        create_skill(store, slug="beta")
+        cli_run(["groups", "create", "my-group", "My Group", "Desc"], store)
+        cli_run(["groups", "add", "my-group", "alpha", "beta"], store)
+        result = cli_run(["groups", "rm", "my-group", "alpha", "beta"], store)
+        assert result.exit_code == 0
+        index = read_index(store)
+        assert index["groups"]["my-group"]["skills"] == []
+        assert index["stats"]["organized"] == 0
+
+    def test_rm_from_nonexistent_group(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        result = cli_run(["groups", "rm", "nope", "alpha"], store)
+        assert result.exit_code != 0
+        assert "not found" in result.output.lower()
+
+    def test_rm_nothing_when_skill_not_in_group(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        create_skill(store, slug="alpha")
+        cli_run(["groups", "create", "my-group", "My Group", "Desc"], store)
+        result = cli_run(["groups", "rm", "my-group", "alpha"], store)
+        assert result.exit_code == 0
+        assert "None of the specified skills" in result.output
+
+
+class TestSyncGcGroups:
+    """Sync should clean up ghost slugs in groups."""
+
+    def test_sync_removes_orphaned_group_slugs(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        create_skill(store, slug="alpha")
+        cli_run(["groups", "create", "my-group", "My Group", "Desc"], store)
+        cli_run(["groups", "add", "my-group", "alpha"], store)
+        # Manually inject a ghost slug
+        index = read_index(store)
+        index["groups"]["my-group"]["skills"].append("ghost")
+        (store / "index.json").write_text(json.dumps(index, indent=2), encoding="utf-8")
+        # Run sync
+        result = cli_run(["sync"], store)
+        assert result.exit_code == 0
+        index = read_index(store)
+        assert "ghost" not in index["groups"]["my-group"]["skills"]
+        assert "alpha" in index["groups"]["my-group"]["skills"]
+
+    def test_sync_updates_organized_count_after_gc(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        create_skill(store, slug="alpha")
+        cli_run(["groups", "create", "my-group", "My Group", "Desc"], store)
+        cli_run(["groups", "add", "my-group", "alpha", "ghost"], store)
+        # Delete alpha manually
+        import shutil
+        shutil.rmtree(store / "skills" / "alpha")
+        result = cli_run(["sync"], store)
+        assert result.exit_code == 0
+        index = read_index(store)
+        assert index["stats"]["organized"] == 0
+
+
+class TestStatus:
+    """The dashboard."""
+
+    def test_status_empty_store(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        result = cli_run(["status"], store)
+        assert result.exit_code == 0
+        assert "Empty" in result.output or "0 total" in result.output
+
+    def test_status_shows_skills_and_groups(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        create_skill(store, slug="alpha")
+        create_skill(store, slug="beta")
+        cli_run(["groups", "create", "my-group", "My Group", "Desc"], store)
+        cli_run(["groups", "add", "my-group", "alpha"], store)
+        result = cli_run(["status"], store)
+        assert result.exit_code == 0
+        assert "2 total" in result.output
+        assert "1 groups" in result.output or "1 group" in result.output
+        assert "1 skills organized" in result.output or "50%" in result.output
+        assert "my-group" in result.output
+
+    def test_status_unorganized_warning(self, tmp_path):
+        store = tmp_path / "store"
+        init_store(store)
+        for i in range(12):
+            create_skill(store, slug=f"skill-{i:02d}")
+        result = cli_run(["status"], store)
+        assert result.exit_code == 0
+        assert "Unorganized" in result.output or "ungrouped" in result.output
+
+    def test_status_fails_before_init(self, tmp_path):
+        store = tmp_path / "store"
+        store.mkdir(parents=True)
+        result = cli_run(["status"], store)
+        assert result.exit_code != 0
+        assert "init" in result.output.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -1452,7 +1747,7 @@ class TestVersionAndHelp:
 
     def test_help_for_specific_command(self):
         """skill-store help <cmd> should show that command's help."""
-        for cmd in ["init", "sync", "load", "list", "pin", "version", "help"]:
+        for cmd in ["init", "sync", "load", "list", "pin", "groups", "status", "version", "help"]:
             runner = CliRunner()
             result = runner.invoke(cli, ["help", cmd])
             assert result.exit_code == 0, f"help {cmd} failed"

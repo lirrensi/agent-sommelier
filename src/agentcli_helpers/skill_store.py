@@ -2,6 +2,7 @@
 
 Manage a folder-based registry of agent skills at ~/.skill-store/.
 Load, list, pin, create, and sync skills with automatic git backups.
+Organize skills into groups for easier navigation at scale.
 
 Usage:
     skill-store                   Show help (no args = help)
@@ -14,6 +15,17 @@ Usage:
     skill-store list [--page N]   Paginated listing (pinned first)
     skill-store pin <slug>        Pin a skill to top of list
     skill-store unpin <slug>      Unpin a skill
+    skill-store search <query>    Full-text search across skills
+    skill-store groups create <slug> <name> <desc>
+                                  Create a skill group
+    skill-store groups list       List all groups
+    skill-store groups delete <slug>
+                                  Delete a group (skills stay)
+    skill-store groups add <group> <skill>...
+                                  Add skills to a group
+    skill-store groups rm <group> <skill>...
+                                  Remove skills from a group
+    skill-store status            Store health & organization overview
     skill-store version           Show version
     skill-store help [command]    Show help for a command
 """
@@ -57,7 +69,7 @@ def _json_dumps(obj: Any) -> str:
 DEFAULT_STORE_DIR = Path.home() / ".skill-store"
 SKILLS_DIR_NAME = "skills"
 INDEX_FILE_NAME = "index.json"
-INDEX_VERSION = 1
+INDEX_VERSION = 2
 PAGE_SIZE = 20
 
 # ---------------------------------------------------------------------------
@@ -65,6 +77,37 @@ PAGE_SIZE = 20
 # ---------------------------------------------------------------------------
 
 console = Console()
+
+# ---------------------------------------------------------------------------
+# Unicode / emoji safety
+# ---------------------------------------------------------------------------
+
+
+def _supports_unicode() -> bool:
+    """Detect if stdout can safely render unicode symbols/emojis."""
+    # Non-interactive (pipe/redirect) -> conservative
+    if not sys.stdout.isatty():
+        return False
+
+    # Known good terminal emulators bypass encoding check
+    if any(os.environ.get(k) for k in ("WT_SESSION", "VSCODE_CWD", "TERMINUS_SUBLIME")):
+        return True
+    if os.environ.get("TERM_PROGRAM") in ("iTerm.app", "Apple_Terminal", "vscode", "Hyper"):
+        return True
+    if os.environ.get("COLORTERM") in ("truecolor", "24bit"):
+        return True
+    term = os.environ.get("TERM", "")
+    if "256color" in term or "xterm" in term:
+        return True
+
+    # Fallback: check encoding
+    encoding = (getattr(sys.stdout, "encoding", None) or "").lower()
+    return encoding in ("utf-8", "utf-8-sig", "utf_8", "utf_8_sig", "cp65001")
+
+
+def _e(symbol: str, fallback: str = "") -> str:
+    """Return symbol if terminal supports unicode, else fallback."""
+    return symbol if _supports_unicode() else fallback
 
 # ---------------------------------------------------------------------------
 # Store path resolution
@@ -81,7 +124,7 @@ def ensure_store_initialized(store: Path) -> None:
     """Raise if the store hasn't been initialized."""
     if not (store / INDEX_FILE_NAME).exists():
         console.print(
-            f"[red]✗[/] Store not initialized at [bold]{store}[/]\n"
+            f"[red]{_e('✗', 'x')}[/] Store not initialized at [bold]{store}[/]\n"
             f"  Run [bold]skill-store init[/] first."
         )
         sys.exit(1)
@@ -96,9 +139,21 @@ def load_index(store: Path) -> dict[str, Any]:
     """Load the index.json from the store."""
     idx_path = store / INDEX_FILE_NAME
     if not idx_path.exists():
-        return {"version": INDEX_VERSION, "pinned": [], "skills": [], "stats": {"total": 0, "pinned": 0, "updated_at": ""}}
+        return {
+            "version": INDEX_VERSION,
+            "pinned": [],
+            "skills": [],
+            "groups": {},
+            "stats": {"total": 0, "pinned": 0, "groups": 0, "organized": 0, "updated_at": ""},
+        }
     with open(idx_path, encoding="utf-8") as f:
-        return json.load(f)
+        index = json.load(f)
+    # Painless v1 -> v2 migration: inject missing fields
+    index.setdefault("groups", {})
+    stats = index.setdefault("stats", {})
+    stats.setdefault("groups", 0)
+    stats.setdefault("organized", 0)
+    return index
 
 
 def save_index(store: Path, index: dict[str, Any]) -> None:
@@ -158,7 +213,7 @@ def build_tree_lines(path: Path, prefix: str = "") -> list[str]:
 
     for i, entry in enumerate(entries):
         is_last = i == len(entries) - 1
-        connector = "└── " if is_last else "├── "
+        connector = _e("└── ", "`-- ") if is_last else _e("├── ", "|-- ")
         lines.append(f"{prefix}{connector}{entry.name}")
 
         if entry.is_dir():
@@ -253,7 +308,7 @@ def cmd_init(ctx: click.Context) -> None:
     store = ctx.obj["store"]
 
     if store.exists() and (store / INDEX_FILE_NAME).exists():
-        console.print("[yellow]⚠[/] Skill store already initialized.")
+        console.print("[yellow]{_e('⚠', '!')}[/] Skill store already initialized.")
         console.print(f"   Location: [bold]{store}[/]")
         return
 
@@ -264,7 +319,8 @@ def cmd_init(ctx: click.Context) -> None:
         "version": INDEX_VERSION,
         "pinned": [],
         "skills": [],
-        "stats": {"total": 0, "pinned": 0, "updated_at": ""},
+        "groups": {},
+        "stats": {"total": 0, "pinned": 0, "groups": 0, "organized": 0, "updated_at": ""},
     }
     save_index(store, index)
 
@@ -278,11 +334,11 @@ def cmd_init(ctx: click.Context) -> None:
         if not gitignore.exists():
             gitignore.write_text("*.tmp\n__pycache__/\n.venv/\n")
         git_auto_commit(store, "chore: initialize skill store")
-        console.print(f"[green]✓[/] Initialized skill store at [bold]{store}[/]")
-        console.print(f"[green]✓[/] Git repository initialized")
+        console.print(f"[green]{_e('✓', '+')}[/] Initialized skill store at [bold]{store}[/]")
+        console.print(f"[green]{_e('✓', '+')}[/] Git repository initialized")
     else:
-        console.print(f"[green]✓[/] Initialized skill store at [bold]{store}[/]")
-        console.print("[yellow]⚠[/] Git not found — skipping repository init")
+        console.print(f"[green]{_e('✓', '+')}[/] Initialized skill store at [bold]{store}[/]")
+        console.print("[yellow]{_e('⚠', '!')}[/] Git not found — skipping repository init")
         console.print("   Install git for automatic versioned backups.")
 
 
@@ -305,7 +361,7 @@ def process_skill_file(skill_file: Path, skills_dir: Path) -> bool:
     if target_dir.exists():
         if not sys.stdin.isatty():
             console.print(
-                f"[red]✗[/] Collision: [bold]'{original_slug}'[/] already exists."
+                f"[red]{_e('✗', 'x')}[/] Collision: [bold]'{original_slug}'[/] already exists."
             )
             console.print(
                 "   Delete or rename the existing folder, or run in a terminal."
@@ -313,7 +369,7 @@ def process_skill_file(skill_file: Path, skills_dir: Path) -> bool:
             return False
 
         console.print(
-            f"[yellow]⚠[/] Skill [bold]'{original_slug}'[/] already exists."
+            f"[yellow]{_e('⚠', '!')}[/] Skill [bold]'{original_slug}'[/] already exists."
         )
         action = click.prompt(
             "  [O]verwrite, [S]kip, [R]ename", default="s"
@@ -328,11 +384,11 @@ def process_skill_file(skill_file: Path, skills_dir: Path) -> bool:
                 new_slug = click.prompt("  New slug").strip()
                 err = validate_slug(new_slug)
                 if err:
-                    console.print(f"  [red]✗[/] {err}")
+                    console.print(f"  [red]{_e('✗', 'x')}[/] {err}")
                     continue
                 if (skills_dir / new_slug).exists():
                     console.print(
-                        f"  [red]✗[/] [bold]'{new_slug}'[/] already exists."
+                        f"  [red]{_e('✗', 'x')}[/] [bold]'{new_slug}'[/] already exists."
                     )
                     continue
                 break
@@ -347,7 +403,7 @@ def process_skill_file(skill_file: Path, skills_dir: Path) -> bool:
             # Quick validation: check it's a real zip
             bad = zf.testzip()
             if bad is not None:
-                console.print(f"  [red]✗[/] Corrupt zip: {bad}")
+                console.print(f"  [red]{_e('✗', 'x')}[/] Corrupt zip: {bad}")
                 return False
 
             with tempfile.TemporaryDirectory(prefix="skill-extract-") as tmp:
@@ -374,16 +430,16 @@ def process_skill_file(skill_file: Path, skills_dir: Path) -> bool:
                     shutil.move(str(item), str(dest))
 
     except zipfile.BadZipFile:
-        console.print(f"  [red]✗[/] [bold]{skill_file.name}[/] is not a valid zip.")
+        console.print(f"  [red]{_e('✗', 'x')}[/] [bold]{skill_file.name}[/] is not a valid zip.")
         return False
     except Exception as exc:
-        console.print(f"  [red]✗[/] Failed to extract [bold]{skill_file.name}[/]: {exc}")
+        console.print(f"  [red]{_e('✗', 'x')}[/] Failed to extract [bold]{skill_file.name}[/]: {exc}")
         return False
 
     # Remove the .skill file now that extraction is complete
     skill_file.unlink()
     console.print(
-        f"  [green]✓[/] Extracted [bold]{skill_file.name}[/] → [bold]{target_slug}[/]"
+        f"  [green]{_e('✓', '+')}[/] Extracted [bold]{skill_file.name}[/] → [bold]{target_slug}[/]"
     )
     return True
 
@@ -442,21 +498,37 @@ def cmd_sync(ctx: click.Context) -> None:
         key=lambda s: s["slug"],
     )
 
+    # --- GC orphaned group slugs -------------------------------------------
+    valid_slugs = {s["slug"] for s in scanned}
+    groups = index.get("groups", {})
+    for gslug, group in groups.items():
+        before = len(group.get("skills", []))
+        cleaned = [s for s in group.get("skills", []) if s in valid_slugs]
+        if len(cleaned) != before:
+            group["skills"] = cleaned
+
+    # --- Count organized skills (unique slugs that appear in any group) -----
+    organized_slugs: set[str] = set()
+    for group in groups.values():
+        organized_slugs.update(group.get("skills", []))
+
     index["skills"] = pinned_skills + unpinned_skills
     index["pinned"] = updated_pinned
     index["stats"] = {
         "total": len(scanned),
         "pinned": len(updated_pinned),
+        "groups": len(groups),
+        "organized": len(organized_slugs),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
     save_index(store, index)
 
     # Git snapshot
-    git_auto_commit(store, f"sync: {len(scanned)} skills ({len(updated_pinned)} pinned)")
+    git_auto_commit(store, f"sync: {len(scanned)} skills ({len(updated_pinned)} pinned, {len(groups)} groups)")
 
-    console.print(f"[green]✓[/] Scanned [bold]{len(scanned)}[/] skills ([bold]{len(updated_pinned)}[/] pinned, [bold]{len(scanned) - len(updated_pinned)}[/] unpinned)")
-    console.print(f"[green]✓[/] Index updated")
+    console.print(f"[green]{_e('✓', '+')}[/] Scanned [bold]{len(scanned)}[/] skills ([bold]{len(updated_pinned)}[/] pinned, [bold]{len(scanned) - len(updated_pinned)}[/] unpinned)")
+    console.print(f"[green]{_e('✓', '+')}[/] Index updated")
     if len(scanned) == 0:
         console.print("   [dim]No skills found. Add one with [bold]skill-store create-new[/].[/]")
 
@@ -498,7 +570,7 @@ def cmd_create_new(ctx: click.Context) -> None:
     existing_slugs = {s["slug"] for s in index["skills"]}
 
     console.print("[bold]Creating a new skill[/]")
-    console.print("─" * 40)
+    console.print(_e("─", "-") * 40)
 
     # --- Slug ---
     slug = ""
@@ -506,10 +578,10 @@ def cmd_create_new(ctx: click.Context) -> None:
         slug = click.prompt("  Slug", default="").strip()
         err = validate_slug(slug)
         if err:
-            console.print(f"  [red]✗[/] {err}")
+            console.print(f"  [red]{_e('✗', 'x')}[/] {err}")
             continue
         if slug in existing_slugs:
-            console.print(f"  [red]✗[/] Slug [bold]'{slug}'[/] already exists.")
+            console.print(f"  [red]{_e('✗', 'x')}[/] Slug [bold]'{slug}'[/] already exists.")
             continue
         break
 
@@ -521,7 +593,7 @@ def cmd_create_new(ctx: click.Context) -> None:
     # --- Description ---
     description = click.prompt("  Description").strip()
     while not description:
-        console.print("  [yellow]⚠[/] Description is required.")
+        console.print("  [yellow]{_e('⚠', '!')}[/] Description is required.")
         description = click.prompt("  Description").strip()
 
     # --- Create folder ---
@@ -548,7 +620,7 @@ description: {description}
 """
     (skill_dir / "SKILL.md").write_text(skill_md_content.lstrip(), encoding="utf-8")
 
-    console.print(f"\n[green]✓[/] Created skill at [bold]{skill_dir}[/]")
+    console.print(f"\n[green]{_e('✓', '+')}[/] Created skill at [bold]{skill_dir}[/]")
 
     # --- Run sync to update index ---
     ctx.invoke(cmd_sync)
@@ -571,7 +643,7 @@ def cmd_load(ctx: click.Context, slug: str, json: bool) -> None:
 
     skill = find_skill(index, slug)
     if not skill:
-        console.print(f"[red]✗[/] Skill [bold]'{slug}'[/] not found.")
+        console.print(f"[red]{_e('✗', 'x')}[/] Skill [bold]'{slug}'[/] not found.")
         suggestions = [s["slug"] for s in index["skills"] if slug in s["slug"]]
         if suggestions:
             console.print(f"   Did you mean: {', '.join(suggestions)}?")
@@ -618,7 +690,7 @@ def cmd_preview(ctx: click.Context, slug: str) -> None:
 
     skill = find_skill(index, slug)
     if not skill:
-        console.print(f"[red]✗[/] Skill [bold]'{slug}'[/] not found.")
+        console.print(f"[red]{_e('✗', 'x')}[/] Skill [bold]'{slug}'[/] not found.")
         suggestions = [s["slug"] for s in index["skills"] if slug in s["slug"]]
         if suggestions:
             console.print(f"   Did you mean: {', '.join(suggestions)}?")
@@ -630,7 +702,7 @@ def cmd_preview(ctx: click.Context, slug: str) -> None:
     skill_md = skill_path / "SKILL.md"
 
     if not skill_md.exists():
-        console.print(f"[red]✗[/] No [bold]SKILL.md[/] found in [bold]{slug}[/].")
+        console.print(f"[red]{_e('✗', 'x')}[/] No [bold]SKILL.md[/] found in [bold]{slug}[/].")
         sys.exit(1)
 
     lines = skill_md.read_text(encoding="utf-8").splitlines()
@@ -684,7 +756,7 @@ def _display_skills_list(
         desc = _clean_desc(skill.get("description", ""))
 
         # Slug line: "⭐ slug" or "+ slug"
-        prefix = "⭐ " if skill["slug"] in pinned_slugs else "+ "
+        prefix = _e("⭐ ", "* ") if skill["slug"] in pinned_slugs else "+ "
         click.echo(f"{prefix}{slug}")
 
         # Description wrapped and indented
@@ -701,7 +773,7 @@ def _display_skills_list(
 
         # Thin separator ("---")
         if i < len(skills) - 1:
-            click.echo("---")
+            click.echo(_e("───", "---"))
 
     if page_info:
         click.echo("")
@@ -728,7 +800,7 @@ def cmd_list(ctx: click.Context, page: int, json: bool) -> None:
     total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
 
     if page < 1 or page > total_pages:
-        console.print(f"[red]✗[/] Page [bold]{page}[/] out of range (1–{total_pages}).")
+        console.print(f"[red]{_e('✗', 'x')}[/] Page [bold]{page}[/] out of range (1–{total_pages}).")
         sys.exit(1)
 
     start = (page - 1) * PAGE_SIZE
@@ -745,7 +817,7 @@ def cmd_list(ctx: click.Context, page: int, json: bool) -> None:
                 "skills": [],
             }))
         else:
-            console.print("[yellow]⚠[/] No skills in the store.")
+            console.print("[yellow]{_e('⚠', '!')}[/] No skills in the store.")
             console.print("   Create one with [bold]skill-store create-new[/].")
         return
 
@@ -873,7 +945,7 @@ def cmd_search(ctx: click.Context, query: str, json: bool) -> None:
         if json:
             click.echo(_json_dumps({"query": query, "results": 0, "skills": []}))
         else:
-            console.print("[yellow]⚠[/] Search query cannot be empty.")
+            console.print("[yellow]{_e('⚠', '!')}[/] Search query cannot be empty.")
         return
 
     import re
@@ -947,7 +1019,7 @@ def cmd_search(ctx: click.Context, query: str, json: bool) -> None:
                 "query": query, "results": 0, "rg_used": rg_used, "skills": [],
             }))
         else:
-            msg = f"[yellow]⚠[/] No skills match [bold]'{query}'[/]."
+            msg = f"[yellow]{_e('⚠', '!')}[/] No skills match [bold]'{query}'[/]."
             if not rg_used and _rg_available():
                 msg += " (searched metadata only, no content matches)"
             elif not _rg_available():
@@ -1029,7 +1101,7 @@ def cmd_pin(ctx: click.Context, slug: str) -> None:
 
     skill = find_skill(index, slug)
     if not skill:
-        console.print(f"[red]✗[/] Skill [bold]'{slug}'[/] not found.")
+        console.print(f"[red]{_e('✗', 'x')}[/] Skill [bold]'{slug}'[/] not found.")
         sys.exit(1)
 
     pinned = index.get("pinned", [])
@@ -1037,12 +1109,12 @@ def cmd_pin(ctx: click.Context, slug: str) -> None:
         pinned.append(slug)
         index["pinned"] = pinned
         save_index(store, index)
-        console.print(f"[green]✓[/] Pinned [bold]{slug}[/]")
+        console.print(f"[green]{_e('✓', '+')}[/] Pinned [bold]{slug}[/]")
 
         # Move skill entry to pinned section in current sort
         ctx.invoke(cmd_sync)
     else:
-        console.print(f"[yellow]⚠[/] [bold]{slug}[/] is already pinned.")
+        console.print(f"[yellow]{_e('⚠', '!')}[/] [bold]{slug}[/] is already pinned.")
 
 
 @click.command()
@@ -1056,7 +1128,7 @@ def cmd_unpin(ctx: click.Context, slug: str) -> None:
 
     skill = find_skill(index, slug)
     if not skill:
-        console.print(f"[red]✗[/] Skill [bold]'{slug}'[/] not found.")
+        console.print(f"[red]{_e('✗', 'x')}[/] Skill [bold]'{slug}'[/] not found.")
         sys.exit(1)
 
     pinned = index.get("pinned", [])
@@ -1064,12 +1136,300 @@ def cmd_unpin(ctx: click.Context, slug: str) -> None:
         pinned.remove(slug)
         index["pinned"] = pinned
         save_index(store, index)
-        console.print(f"[green]✓[/] Unpinned [bold]{slug}[/]")
+        console.print(f"[green]{_e('✓', '+')}[/] Unpinned [bold]{slug}[/]")
 
         # Re-sort so this falls to alphabetical
         ctx.invoke(cmd_sync)
     else:
-        console.print(f"[yellow]⚠[/] [bold]{slug}[/] is not pinned.")
+        console.print(f"[yellow]{_e('⚠', '!')}[/] [bold]{slug}[/] is not pinned.")
+
+
+# ---------------------------------------------------------------------------
+# Group helpers
+# ---------------------------------------------------------------------------
+
+
+def _group_exists(index: dict[str, Any], group_slug: str) -> bool:
+    return group_slug in index.get("groups", {})
+
+
+def _get_group(index: dict[str, Any], group_slug: str) -> dict[str, Any] | None:
+    return index.get("groups", {}).get(group_slug)
+
+
+def _validate_group_slug(slug: str) -> str | None:
+    """Validate a group slug. Returns an error message or None."""
+    if not slug:
+        return "Group slug cannot be empty."
+    if not slug.isascii() or not slug.replace("-", "").isalnum():
+        return "Group slug must be kebab-case: only lowercase letters, numbers, and hyphens."
+    if slug != slug.lower():
+        return "Group slug must be lowercase."
+    if slug.startswith("-") or slug.endswith("-"):
+        return "Group slug cannot start or end with a hyphen."
+    if "--" in slug:
+        return "Group slug cannot have consecutive hyphens."
+    return None
+
+
+# ---------------------------------------------------------------------------
+# COMMAND: status
+# ---------------------------------------------------------------------------
+
+
+@click.command()
+@click.pass_context
+def cmd_status(ctx: click.Context) -> None:
+    """Show store health: skills, groups, and organization overview."""
+    store = ctx.obj["store"]
+    ensure_store_initialized(store)
+    index = load_index(store)
+
+    total = len(index.get("skills", []))
+    pinned = len(index.get("pinned", []))
+    groups = index.get("groups", {})
+    group_count = len(groups)
+    organized = len({s for g in groups.values() for s in g.get("skills", [])})
+    unorganized = total - organized
+
+    # Health badge
+    if total == 0:
+        health = "[dim]Empty[/]"
+        health_icon = _e("⚪", "o")
+    elif group_count == 0:
+        health = "[yellow]Unorganized[/]"
+        health_icon = _e("🔴", "!")
+    elif organized == total:
+        health = "[green]Fully Organized[/]"
+        health_icon = _e("🟢", "+")
+    elif organized > total * 0.5:
+        health = "[cyan]Mostly Organized[/]"
+        health_icon = _e("🔵", "~")
+    else:
+        health = "[yellow]Semi-organized[/]"
+        health_icon = _e("🟡", "~")
+
+    console.print(f"[bold]Store:[/]       {store.resolve()}")
+    console.print(f"[bold]Skills:[/]      {total} total · {pinned} pinned")
+    console.print(f"[bold]Groups:[/]      {group_count} groups · {organized} skills organized ({(organized/total*100 if total else 0):.0f}%) · {unorganized} ungrouped")
+    console.print(f"[bold]Health:[/]      {health_icon} {health}")
+
+    if groups:
+        console.print("")
+        console.print("[bold]Top groups:[/]")
+        # Sort by skill count desc, then name
+        sorted_groups = sorted(
+            groups.items(),
+            key=lambda item: (-len(item[1].get("skills", [])), item[0]),
+        )
+        for gslug, group in sorted_groups[:10]:
+            skill_count = len(group.get("skills", []))
+            preview = ", ".join(group.get("skills", [])[:5])
+            if len(group.get("skills", [])) > 5:
+                preview += ", ..."
+            console.print(f"  [cyan]{gslug}[/]  ({skill_count} skills)")
+            if preview:
+                console.print(f"    [dim]{preview}[/]")
+
+    console.print("")
+    if group_count == 0 and total > 10:
+        console.print("[dim]Tip: You have many ungrouped skills. Try [bold]skill-store groups create <slug> <name> <description>[/] to start organizing.[/]")
+    elif unorganized > 0:
+        console.print(f"[dim]Tip: {unorganized} skills are not in any group. Use [bold]skill-store groups add <group> <skill>[/] to organize.[/]")
+
+
+# ---------------------------------------------------------------------------
+# COMMAND GROUP: groups
+# ---------------------------------------------------------------------------
+
+
+@click.group("groups")
+@click.pass_context
+def cmd_groups(ctx: click.Context) -> None:
+    """Manage skill groups (tags/collections)."""
+    pass
+
+
+@click.command("create")
+@click.argument("slug")
+@click.argument("name")
+@click.argument("description")
+@click.pass_context
+def cmd_groups_create(ctx: click.Context, slug: str, name: str, description: str) -> None:
+    """Create a new group."""
+    store = ctx.obj["store"]
+    ensure_store_initialized(store)
+    index = load_index(store)
+
+    err = _validate_group_slug(slug)
+    if err:
+        console.print(f"[red]{_e('✗', 'x')}[/] {err}")
+        sys.exit(1)
+
+    if _group_exists(index, slug):
+        console.print(f"[red]{_e('✗', 'x')}[/] Group [bold]'{slug}'[/] already exists.")
+        sys.exit(1)
+
+    if not name.strip():
+        console.print("[red]{_e('✗', 'x')}[/] Group name cannot be empty.")
+        sys.exit(1)
+    if not description.strip():
+        console.print("[red]{_e('✗', 'x')}[/] Group description cannot be empty.")
+        sys.exit(1)
+
+    index["groups"][slug] = {
+        "name": name.strip(),
+        "description": description.strip(),
+        "skills": [],
+    }
+    # Update stats
+    organized = len({s for g in index["groups"].values() for s in g.get("skills", [])})
+    index["stats"]["groups"] = len(index["groups"])
+    index["stats"]["organized"] = organized
+
+    save_index(store, index)
+    git_auto_commit(store, f"groups: create '{slug}'")
+    console.print(f"[green]{_e('✓', '+')}[/] Created group [bold]{slug}[/] — {name.strip()}")
+
+
+@click.command("list")
+@click.pass_context
+def cmd_groups_list(ctx: click.Context) -> None:
+    """List all groups with skill previews."""
+    store = ctx.obj["store"]
+    ensure_store_initialized(store)
+    index = load_index(store)
+    groups = index.get("groups", {})
+
+    if not groups:
+        console.print("[yellow]{_e('⚠', '!')}[/] No groups yet.")
+        console.print("   Create one with [bold]skill-store groups create <slug> <name> <description>[/]")
+        return
+
+    table = Table(show_header=True, header_style="bold magenta", box=None)
+    table.add_column("Group", style="cyan", no_wrap=True)
+    table.add_column("Skills", style="green", justify="right")
+    table.add_column("Description", style="white")
+    table.add_column("Preview", style="dim")
+
+    for gslug in sorted(groups.keys()):
+        group = groups[gslug]
+        skill_list = group.get("skills", [])
+        preview = ", ".join(skill_list[:10])
+        if len(skill_list) > 10:
+            preview += f", ... ({len(skill_list) - 10} more)"
+        table.add_row(
+            gslug,
+            str(len(skill_list)),
+            group.get("description", ""),
+            preview or "<empty>",
+        )
+
+    console.print(table)
+
+
+@click.command("delete")
+@click.argument("slug")
+@click.confirmation_option(prompt="Are you sure you want to delete this group?")
+@click.pass_context
+def cmd_groups_delete(ctx: click.Context, slug: str) -> None:
+    """Delete a group (skills are not deleted)."""
+    store = ctx.obj["store"]
+    ensure_store_initialized(store)
+    index = load_index(store)
+
+    if not _group_exists(index, slug):
+        console.print(f"[red]{_e('✗', 'x')}[/] Group [bold]'{slug}'[/] not found.")
+        sys.exit(1)
+
+    del index["groups"][slug]
+    organized = len({s for g in index["groups"].values() for s in g.get("skills", [])})
+    index["stats"]["groups"] = len(index["groups"])
+    index["stats"]["organized"] = organized
+
+    save_index(store, index)
+    git_auto_commit(store, f"groups: delete '{slug}'")
+    console.print(f"[green]{_e('✓', '+')}[/] Deleted group [bold]{slug}[/]")
+
+
+@click.command("add")
+@click.argument("group_slug")
+@click.argument("skill_slugs", nargs=-1, required=True)
+@click.pass_context
+def cmd_groups_add(ctx: click.Context, group_slug: str, skill_slugs: tuple[str, ...]) -> None:
+    """Add one or more skills to a group."""
+    store = ctx.obj["store"]
+    ensure_store_initialized(store)
+    index = load_index(store)
+
+    group = _get_group(index, group_slug)
+    if not group:
+        console.print(f"[red]{_e('✗', 'x')}[/] Group [bold]'{group_slug}'[/] not found.")
+        sys.exit(1)
+
+    existing_skills = {s["slug"] for s in index.get("skills", [])}
+    added: list[str] = []
+    skipped: list[str] = []
+
+    for skill_slug in skill_slugs:
+        if skill_slug not in existing_skills:
+            console.print(f"[yellow]{_e('⚠', '!')}[/] Skill [bold]'{skill_slug}'[/] does not exist — skipping.")
+            skipped.append(skill_slug)
+            continue
+        if skill_slug in group.get("skills", []):
+            console.print(f"[yellow]{_e('⚠', '!')}[/] Skill [bold]'{skill_slug}'[/] already in group — skipping.")
+            skipped.append(skill_slug)
+            continue
+        group.setdefault("skills", []).append(skill_slug)
+        added.append(skill_slug)
+
+    if added:
+        organized = len({s for g in index["groups"].values() for s in g.get("skills", [])})
+        index["stats"]["organized"] = organized
+        save_index(store, index)
+        git_auto_commit(store, f"groups: add {len(added)} skill(s) to '{group_slug}'")
+        console.print(f"[green]{_e('✓', '+')}[/] Added [bold]{', '.join(added)}[/] to [bold]{group_slug}[/]")
+    elif not skipped:
+        console.print("[yellow]{_e('⚠', '!')}[/] Nothing to add.")
+
+
+@click.command("rm")
+@click.argument("group_slug")
+@click.argument("skill_slugs", nargs=-1, required=True)
+@click.pass_context
+def cmd_groups_rm(ctx: click.Context, group_slug: str, skill_slugs: tuple[str, ...]) -> None:
+    """Remove one or more skills from a group."""
+    store = ctx.obj["store"]
+    ensure_store_initialized(store)
+    index = load_index(store)
+
+    group = _get_group(index, group_slug)
+    if not group:
+        console.print(f"[red]{_e('✗', 'x')}[/] Group [bold]'{group_slug}'[/] not found.")
+        sys.exit(1)
+
+    removed: list[str] = []
+    for skill_slug in skill_slugs:
+        if skill_slug in group.get("skills", []):
+            group["skills"].remove(skill_slug)
+            removed.append(skill_slug)
+
+    if removed:
+        organized = len({s for g in index["groups"].values() for s in g.get("skills", [])})
+        index["stats"]["organized"] = organized
+        save_index(store, index)
+        git_auto_commit(store, f"groups: remove {len(removed)} skill(s) from '{group_slug}'")
+        console.print(f"[green]{_e('✓', '+')}[/] Removed [bold]{', '.join(removed)}[/] from [bold]{group_slug}[/]")
+    else:
+        console.print("[yellow]{_e('⚠', '!')}[/] None of the specified skills were in the group.")
+
+
+# Register group subcommands
+cmd_groups.add_command(cmd_groups_create, "create")
+cmd_groups.add_command(cmd_groups_list, "list")
+cmd_groups.add_command(cmd_groups_delete, "delete")
+cmd_groups.add_command(cmd_groups_add, "add")
+cmd_groups.add_command(cmd_groups_rm, "rm")
 
 
 # ---------------------------------------------------------------------------
@@ -1097,7 +1457,7 @@ def cmd_help(ctx: click.Context, command: str | None) -> None:
     if command:
         cmd = cli.get_command(ctx, command)
         if cmd is None:
-            console.print(f"[red]✗[/] Unknown command: [bold]{command}[/]")
+            console.print(f"[red]{_e('✗', 'x')}[/] Unknown command: [bold]{command}[/]")
             suggestions = [
                 c for c in cli.list_commands(ctx) if command in c
             ]
@@ -1159,6 +1519,8 @@ cli.add_command(cmd_list, "list")
 cli.add_command(cmd_search, "search")
 cli.add_command(cmd_pin, "pin")
 cli.add_command(cmd_unpin, "unpin")
+cli.add_command(cmd_groups, "groups")
+cli.add_command(cmd_status, "status")
 cli.add_command(cmd_version, "version")
 cli.add_command(cmd_help, "help")
 
