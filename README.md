@@ -21,12 +21,13 @@ Available skills:
 | `screenshot` | Screen capture that actually works |
 | `tmux` | Terminal multiplexer for SSH, REPLs, and parallel agents |
 | `edge-tts` | Text-to-speech using Microsoft's edge-tts |
-| `memory-bank` | Lightweight persistent memory across conversations |
+| `memory-bank` | **Core.** Persistent memory across conversations — episodic, semantic, procedural. Tags, templates, auto-indexed. For any domain: code, business, personal, research. |
 | `batch-task-executor` | Experimental input-agnostic batch orchestration for many similar tasks |
 | `best-practices-researcher` | Meta-skill for researching best practices and making technology decisions |
 | `calm-down` | De-escalation protocol when the agent is heading the wrong direction |
 | `micropatch` | Semantic fork customization — keep fork features alive across upstream updates |
-| `task-system` | In-repo task management with 12 statuses, CLI-driven, permanent history |
+| `task-system` | In-repo task management with dependencies, ready/blocked queues, search, 12 statuses, tagging strategy, permanent history |
+| `skill-store` | On-demand skill loading from a local registry. Lazy-load hundreds of skills without polluting context. |
 
 ## The Problem
 
@@ -42,6 +43,8 @@ And don't get me started on screenshots.
 
 Then there's **task management**. You start a session, you plan some work, the agent does its thing — but who's tracking what's left? Without a task system, context evaporates between sessions.
 
+And **memory** itself — every conversation starts from scratch. The agent can't remember last session's discoveries, the architecture decisions you made, the client preferences you uncovered, or the workflow you debugged together for an hour. That's not just friction; it's lost knowledge.
+
 ## The Solution
 
 A small collection of CLI tools that wrap the messy stuff. No daemon. No database. Just files and commands that behave the way you expect.
@@ -51,7 +54,7 @@ A small collection of CLI tools that wrap the messy stuff. No daemon. No databas
 uv tool install "git+https://github.com/lirrensi/agent-cli-helpers"
 ```
 
-That's it. Pick what you need:
+That's it. Pick what you need — including the **memory-bank** skill for persistent context and **skill-store** for lazy-loading hundreds more:
 
 | Tool | What it does | Install |
 |------|--------------|---------|
@@ -59,7 +62,8 @@ That's it. Pick what you need:
 | `notify` | Cross-platform desktop notifications | Built-in |
 | `bg` | Background jobs that don't disappear | Built-in |
 | `screenshot` | Screen capture that actually works | `uv tool install "git+https://github.com/lirrensi/agent-cli-helpers#screenshot"` |
-| `tasks` | In-repo task management with 12 statuses | Built-in |
+| `tasks` | In-repo task management with deps, queues, search, 12 statuses | Built-in |
+| `skill-store` | On-demand skill registry — list, search, load, pin, create | Built-in |
 
 Or install everything:
 ```bash
@@ -152,23 +156,49 @@ tasks init
 
 # Create a task
 tasks add "Refactor the auth module"
+tasks add "Fix login bug" --tag bug --tag auth --priority p0
+tasks add "Write tests" --dep TSK-0003:blocks --notes "Must cover edge cases"
 
 # See what needs doing
-tasks list
-tasks next          # highest-priority todo
-tasks status        # session overview
+tasks list                         # All active tasks
+tasks list --status todo --tag bug # Filter by status + tags
+tasks list --tag-any urgent --tag-any security  # OR filter
+tasks list --text "login"          # Full-text search
+tasks list --json                  # Machine-readable
+
+# Smart queues
+tasks next                         # Highest-priority todo
+tasks next --take 3                # Top 3
+tasks next --skip-blocks           # Exclude blocked tasks
+tasks ready                        # Top 5 unblocked tasks
+tasks blocked                      # What's stuck and why
+
+# Session overview
+tasks status                       # In-progress, blockers, priorities, tags, inbox count
+tasks status --json                # Machine-readable
 
 # Get details
-tasks show TSK-0042
+tasks show TSK-0042                # Full detail with deps resolved inline
 
 # Update progress
 tasks update TSK-0042 --status in-progress --priority high
+tasks update TSK-0042 --notes "Investigation found race condition"
+tasks update TSK-0042 --dep TSK-0005:blocks      # Blocked by another task
 
 # Close when done
 tasks close TSK-0042
+tasks close TSK-0042 --note "Fixed, deploying to staging"
 
 # Browse archive
-tasks history
+tasks history                      # Recently closed (default: 30)
+tasks history --limit all          # Full archive
+tasks history --offset 30          # Paginate
+tasks history --tag deploy         # Filter closed by tag
+tasks history --text "auth"        # Search closed archive
+
+# Search everything
+tasks search login                 # Full-text across all tasks
+tasks search "dark mode" --in title  # Field-scoped search
 
 # Dump raw ideas
 tasks inbox
@@ -176,7 +206,43 @@ tasks inbox
 
 **12 statuses** — `todo`, `in-progress`, `done`, `blocked`, `postponed`, `cancelled`, `review`, `waiting`, `parked`, `deferred`, `backlog`, `abandoned`. Move freely between them — no restrictions on transitions.
 
+**Typed dependencies** — Tasks can declare `blocks`, `parent`, `child`, `discovered`, and `relates` relationships. The `blocks` type feeds the ready queue: `tasks ready` shows only unblocked work, `tasks blocked` shows what's stuck and why.
+
+**Multi-dimensional tagging** — Tag tasks by type (`bug`, `feature`, `docs`), area (`auth`, `ui`, `api`), qualifier (`security`, `urgent`, `breaking-change`), process (`needs-review`, `autonomous-ready`), or anything project-specific. Combine freely with `--tag` (AND) and `--tag-any` (OR) filters.
+
+**Notes as a coordination log** — Every `--notes` update appends to an array, giving each task a running history of decisions, blockers, and progress.
+
 Data lives in `tasks/tasks.yaml` (active) and `tasks/closed.yaml` (archive). The `tasks/` directory is gitignored — each clone has its own local task state. Use `tasks inbox` for free-form idea dumps in `tasks/inbox.md`.
+
+### skill-store — Skill registry, on demand
+
+A CLI for managing a local agent skill registry at `~/.skill-store/`. List, search, load, pin, create, and sync skills with automatic git versioning — without polluting your agent's context window.
+
+```bash
+# Initialize the store
+skill-store init
+
+# Browse what's available
+skill-store list                    # Paginated, pinned first
+skill-store search web              # Full-text search names + descriptions
+skill-store search auth --json      # Machine-readable output
+
+# Load a skill when you need it
+skill-store load crony              # Show path + folder tree
+skill-store preview crony           # Read first 100 lines of SKILL.md
+
+# Organize
+skill-store pin crony               # Move to top of list
+skill-store unpin crony
+
+# Create your own
+skill-store create-new              # Interactive scaffolding wizard
+
+# Keep it in sync
+skill-store sync                    # Scan skills, rebuild index, git commit
+```
+
+Skills are stored as flat files in `~/.skill-store/skills/<slug>/SKILL.md` with a git-backed index. Use it as a lazy loader: keep hundreds of skills on disk, load only what you need into context.
 
 ## For AI Agents
 
@@ -196,7 +262,8 @@ skills/
 ├── best-practices-researcher/SKILL.md
 ├── calm-down/SKILL.md
 ├── micropatch/SKILL.md
-└── task-system/SKILL.md
+├── task-system/SKILL.md
+└── skill-store/SKILL.md       # ← New: on-demand skill loading from local registry
 ```
 
 The pattern is simple:
@@ -205,6 +272,12 @@ The pattern is simple:
 3. Use it
 
 No MCP servers. No configuration. No OAuth. Just tools.
+
+> **Memory-bank is a core skill** — it keeps your agent's context alive across sessions.
+> Three memory types (episodic, semantic, procedural), auto-generated INDEX.md with tag search,
+> Obsidian-compatible templates, and a bias toward usefulness across any domain — code, business,
+> personal, research, creative, or client work. Run `bat ./memory/INDEX.md` to orient yourself
+> whenever resuming a project.
 
 ## Repository Map
 
@@ -216,8 +289,15 @@ AgentCLI_Helpers/
 │   ├── bg.py                # Background job manager
 │   ├── crony.py             # Cron job scheduler
 │   ├── screenshot.py        # Screen capture
-│   └── tasks.py             # In-repo task management
-├── skills/                  # Agent skill definitions (13 skills)
+│   ├── tasks.py             # In-repo task management
+│   └── skill_store.py       # On-demand skill registry CLI
+├── skills/                  # Agent skill definitions (14 skills)
+│   ├── memory-bank/         # Core. Episodic/semantic/procedural memories
+│   ├── task-system/         # In-repo task management with deps & queues
+│   ├── skill-store/         # On-demand skill loading from local registry
+│   ├── bg-jobs/             # Background jobs
+│   ├── crony/               # Natural language cron scheduling
+│   └── ...                  # (9 more skills)
 ├── docs/                    # Architecture & product documentation
 │   ├── product.md           # Behavior specs & CLI reference
 │   └── arch.md              # Implementation details
@@ -232,7 +312,7 @@ AgentCLI_Helpers/
 
 ## Why This Exists
 
-You can do all of this in raw bash. Seriously — background jobs, notifications, cron, screenshots, task tracking — it's all possible with the right incantations.
+You can do all of this in raw bash. Seriously — background jobs, notifications, cron, screenshots, task tracking, persistent memory, skill registries — it's all possible with enough shell incantations.
 
 But it's *ugly*. It's *error-prone*. And writing 3 lines of PowerShell just to show a notification is a waste of energy.
 
@@ -242,6 +322,8 @@ This repo exists because AI agents deserve desktop superpowers without the frict
 - **Consistent behavior** across Windows, macOS, and Linux
 - **Error handling** that doesn't make you cry at 3am
 - **No daemon to manage** — just files, folders, and commands that work
+- **Memory that persists** — facts, workflows, and decisions survive between sessions
+- **Skills on demand** — load only what you need, keep hundreds on standby
 
 ## Requirements
 
