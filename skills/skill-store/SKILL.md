@@ -50,6 +50,10 @@ See [`references/install.md`](references/install.md).
 | `.skill` bundles | See [`references/importing.md`](references/importing.md) |
 | Create your own | See [`references/creating.md`](references/creating.md) |
 
+## Organizing Your Skills
+
+As your store grows, groups keep it tidy. See [`references/organizing.md`](references/organizing.md) for the workflow.
+
 ## Environment
 
 | Variable | Default | Purpose |
