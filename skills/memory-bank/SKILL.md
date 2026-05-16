@@ -10,10 +10,13 @@ A persistent memory system for storing knowledge that survives across conversati
 **Default location:** `./memory/` (create if it doesn't exist)
 
 **Default structure:**
-- `./memory/episodic/`
-- `./memory/semantic/`
-- `./memory/procedural/`
-- `./memory/INDEX.md` (auto-maintained — see below)
+- `./memory/episodic/` — active events (last 7 days)
+- `./memory/semantic/` — durable facts and current state
+- `./memory/procedural/` — repeatable workflows and how-tos
+- `./memory/archive/` — compressed episodic memories (auto-managed)
+- `./memory/summaries/episodic/weekly/` — weekly digests of archived episodic files
+- `./memory/summaries/episodic/monthly/` — monthly rollups of weekly digests
+- `./memory/INDEX.md` — auto-maintained living map
 
 ---
 
@@ -54,41 +57,53 @@ Most knowledge fits cleanly into one memory type. Only create multiple files whe
 
 ## Memory Types
 
+These three types are universal — they work for code, business, personal life, creative work, research, and any domain where you need to remember things. The examples below span many contexts to show that flexibility.
+
 ### Episodic
 
 Use for events, moments, decisions-in-context, meetings, incidents, milestones, discoveries, failed attempts, and progress snapshots.
 
 This answers: **what happened?**
 
-Examples:
-- A debugging session that revealed the root cause
-- A client call and the decisions made during it
-- A travel day where something went wrong
-- A negotiation update or milestone reached
+Examples across domains:
+- *Code:* A debugging session that revealed the root cause
+- *Business:* A client call and the decisions made during it
+- *Personal:* A travel day where something went wrong
+- *Creative:* A songwriting session where the chorus finally clicked
+- *Research:* A lab experiment that produced an unexpected result
+- *Relationship:* A conversation that clarified a misunderstanding
 
 ### Semantic
 
-Use for durable knowledge, evolving facts, preferences, profiles, constraints, current project state, and anything that may be updated many times over.
+Use for durable knowledge, evolving facts, preferences, profiles, constraints, current state, and anything that may be updated many times over.
 
 This answers: **what is currently true?**
 
-Examples:
-- User communication preferences
-- Current architecture constraints
-- Client profile and standing preferences
-- Active project status and known risks
+Examples across domains:
+- *User/Client:* Communication preferences, timezone, dietary restrictions, preferred meeting times
+- *Project:* Current architecture constraints, active risks, tech stack choices
+- *Personal:* Health metrics, financial goals, location, current reading list
+- *Creative:* Established world-building rules, character traits, thematic constraints
+- *Behavioral:* How the user likes to be addressed, tone preferences, boundaries
+
+**Important:** Semantic is not just "project facts" — it is *any durable truth about the world you operate in*, including people, projects, and yourself.
 
 ### Procedural
 
-Use for repeatable methods, checklists, workflows, instructions, playbooks, routines, and standard ways of doing things.
+Use for repeatable methods, behavioral guidance, checklists, workflows, instructions, playbooks, routines, and standard ways of doing things — including how to approach situations and how to behave in the future.
 
-This answers: **how do we do this?**
+This answers: **how do we do this?** and **how should I behave?**
 
-Examples:
-- How to deploy safely
-- Weekly reporting workflow
-- Travel packing checklist
-- How to onboard a new client
+Examples across domains:
+- *Code:* How to deploy safely, code review checklist, incident response playbook
+- *Business:* Weekly reporting workflow, client onboarding steps, negotiation prep routine
+- *Personal:* Travel packing checklist, morning routine, weekly reflection process
+- *Behavioral:* How to approach sensitive topics with this user, tone guidance for difficult conversations, when to escalate vs. handle independently
+- *Creative:* The revision checklist, how to critique a draft without crushing morale
+
+**Important:** Procedural is not just "task execution." It is *any repeatable pattern of behavior* — including how you (or the system) should act in specific contexts. If you are building a personality system, behavioral rules belong in procedural memory.
+
+### Multiple types from one interaction
 
 An interaction might span multiple memory types — but **don't force it**. Usually, one well-chosen file is enough.
 
@@ -133,17 +148,25 @@ Ask these questions:
 4. Does it truly span multiple categories in ways you'd search for differently?
    - Only then save in multiple forms. In most cases, one file is enough — don't create extra files just because the knowledge technically touches more than one category.
 
-Examples:
-- "We debugged auth and found the cookie domain was wrong"
+Examples across domains:
+- *Code:* "We debugged auth and found the cookie domain was wrong"
   - `episodic`: the debugging session
   - `semantic`: auth depends on the correct parent-domain cookie setting
-- "The client prefers weekly async updates"
+- *Business:* "The client prefers weekly async updates"
   - `semantic`: client preference
-- "Here is our monthly reporting process"
+- *Business:* "Here is our monthly reporting process"
   - `procedural`: recurring workflow
-- "Friday's failed deploy taught us to run migrations before workers"
+- *Code:* "Friday's failed deploy taught us to run migrations before workers"
   - `episodic`: failed deploy
   - `procedural`: safer release workflow
+- *Personal/Behavioral:* "The user gets overwhelmed by long explanations; they prefer concise bullet points"
+  - `semantic`: user's communication preference
+- *Personal/Behavioral:* "When the user is stressed, acknowledge their feelings first before proposing solutions"
+  - `procedural`: behavioral approach for stressed-user interactions
+- *Creative:* "The protagonist's backstory was finalized: orphan, raised by wolves, afraid of fire"
+  - `semantic`: character profile (durable fact)
+- *Creative:* "Songwriting sessions work best when I start with the melody, not lyrics"
+  - `procedural`: creative process guidance
 
 ---
 
@@ -171,13 +194,14 @@ procedural: how_to_meaningful_name.md
 ```
 
 Examples — notice these span many domains:
-- `2025_03_09_auth_bug_root_cause.md`
-- `2025_03_10_q1_marketing_decisions.md`
-- `user_preferences.md`
-- `client_acme_profile.md`
-- `project_helios_status.md`
-- `how_to_rotate_api_keys.md`
-- `weekly_client_reporting_workflow.md`
+- *Code:* `2025_03_09_auth_bug_root_cause.md`
+- *Business:* `2025_03_10_q1_marketing_decisions.md`
+- *Personal:* `user_preferences.md`, `health_tracking_setup.md`
+- *Business:* `client_acme_profile.md`, `project_helios_status.md`
+- *Code:* `how_to_rotate_api_keys.md`, `incident_response_playbook.md`
+- *Behavioral:* `how_to_approach_stressed_user.md`, `tone_guidance_for_sensitive_topics.md`
+- *Creative:* `character_ariel_backstory.md`, `songwriting_process.md`
+- *Business:* `weekly_client_reporting_workflow.md`
 
 Multiple episodic files per day are normal and encouraged. Semantic and procedural files should usually keep stable names so they can be updated over time.
 
@@ -220,7 +244,7 @@ Templates live in `skills/memory-bank/templates/`. Copy the one matching your me
 |---|---|
 | `templates/episodic.md` | Recording an event, meeting, incident, or session |
 | `templates/semantic.md` | Capturing durable facts, state, preferences, or constraints |
-| `templates/procedural.md` | Writing a repeatable workflow, checklist, or how-to |
+| `templates/procedural.md` | Writing a repeatable workflow, checklist, how-to, or behavioral guidance |
 | `templates/decision.md` | Documenting an architectural or strategic decision (ADR style) |
 | `templates/person.md` | Profiling a person — client, colleague, contact |
 | `templates/project.md` | Tracking a project's current state, risks, and milestones |
@@ -286,6 +310,24 @@ grep "^\- \[" ./memory/INDEX.md
 
 ---
 
+## Episodic Compression
+
+The index script automatically compresses old episodic memories to keep the active folder lean.
+
+**How it works:**
+1. **Weekly**: episodic files older than 7 days are moved to `archive/`
+2. A weekly digest is generated at `summaries/episodic/weekly/YYYY-WNN.md` listing all archived files for that week with summaries and tags
+3. **Monthly**: once a month completes, a monthly digest is generated at `summaries/episodic/monthly/YYYY-MM.md` linking to its 4–5 weekly digests
+
+**Why:**
+- Active `episodic/` stays scannable (no 100-file noise)
+- You can still find anything by searching `archive/` or `summaries/`
+- Weekly/monthly summaries give you the "what happened that week/month" overview without opening individual files
+
+**This is automatic** — just run `index.py` and it handles housekeeping. Do not manually move files into `archive/`.
+
+---
+
 ## Searching Memories
 
 ### Quick orientation (run this first when memories feel relevant)
@@ -344,7 +386,28 @@ rg "keyword" ./memory/procedural/ --no-ignore -i
 rg "keyword" ./memory/episodic/ --no-ignore -i
 ```
 
+### Search archived episodic memories (deep dive)
+```bash
+rg "keyword" ./memory/archive/ --no-ignore -i
+```
+
+### Search weekly/monthly summaries (overview)
+```bash
+rg "keyword" ./memory/summaries/ --no-ignore -i
+```
+
+### Search everything at once (nuclear option)
+```bash
+rg "keyword" ./memory/ --no-ignore -i
+```
+
 After finding relevant files, **read them** using your native file tools. The summary tells you if it's worth reading; reading gives you the actual context.
+
+### Related links
+Use relative paths from `./memory/` root in `related:` fields. Filenames are unique across the whole memory space, so a simple filename is enough:
+```yaml
+related: [semantic/auth_constraints.md, episodic/2026_05_14_auth_bug.md]
+```
 
 ---
 
@@ -375,8 +438,9 @@ No strict rules — use judgment. Good candidates:
 - Information you'd lose if this conversation ended now
 - Anything the user explicitly wants remembered
 - A preference, profile, or constraint likely to matter again
-- A workflow or checklist you'll likely reuse
+- A workflow, checklist, or behavioral pattern you'll likely reuse
 - A bug, config detail, or environment-specific gotcha that could bite again later
+- Behavioral guidance — how to approach a situation, tone rules, interaction patterns that work well with this user or context
 
 Not worth saving:
 - Easily googleable facts
@@ -449,10 +513,13 @@ To mark a file as outdated, add `status: superseded` to its frontmatter — don'
 ## File Organization
 
 By default, organize memory by type:
-- `./memory/episodic/`
-- `./memory/semantic/`
-- `./memory/procedural/`
+- `./memory/episodic/` — active events only (files >7 days auto-move to `archive/`)
+- `./memory/semantic/` — durable facts and state
+- `./memory/procedural/` — workflows and how-tos
+- `./memory/archive/` — auto-managed; do not manually edit
+- `./memory/summaries/episodic/weekly/` — auto-generated weekly digests
+- `./memory/summaries/episodic/monthly/` — auto-generated monthly rollups
 
 You may also encounter or be instructed to use a more structured layout such as `./memory/semantic/clients/` or `./memory/procedural/operations/`. Follow whatever structure exists; if none exists, use the default type-based layout.
 
-**New:** Decision, person, and project memories may live in their respective type folders or in a flat structure — consistency matters more than depth. If you create `./memory/decision/`, `./memory/person/`, or `./memory/project/`, the index script will find and catalog them automatically.
+**New types:** Decision, person, and project memories may live in their respective type folders or in a flat structure — consistency matters more than depth. If you create `./memory/decision/`, `./memory/person/`, or `./memory/project/`, the index script will find and catalog them automatically.

@@ -16,6 +16,8 @@ source: ""
 ## Current State
 [Write the current known state, preferences, constraints, or facts that should remain current over time. Be explicit about what is true *now*.]
 
+> This works for project state, user profiles, personal preferences, character facts, health metrics, or any durable truth about the world you operate in.
+
 ## Background
 How we got here, previous states, or context that helps interpret the current state.
 

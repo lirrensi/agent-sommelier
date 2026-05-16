@@ -19,6 +19,8 @@ Why this matters, background, what triggered it.
 ## What Happened
 [Write the event clearly enough that a future session understands what happened and why it mattered. Include decisions made, people involved, and timeline.]
 
+> Events can be incidents, meetings, creative sessions, personal milestones, research breakthroughs, or any moment worth remembering.
+
 ## Key Details / Findings
 - Point one
 - Point two

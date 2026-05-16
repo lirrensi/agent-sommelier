@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """Initialize a memory bank folder structure."""
 
-import os
 import sys
 from pathlib import Path
 
 MEMORY_DIR = Path("./memory")
-FOLDERS = ["episodic", "semantic", "procedural"]
+FOLDERS = [
+    "episodic",
+    "semantic",
+    "procedural",
+    "archive",
+    "summaries/episodic/weekly",
+    "summaries/episodic/monthly",
+]
 
 INDEX_STARTER = """# Memory Index
 
