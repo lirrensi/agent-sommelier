@@ -1,222 +1,56 @@
 ---
 name: skill-store
 description: >
-  Manage, browse, and import agent skills using the skill-store CLI at
-  ~/.skill-store/. Trigger on: "skill store", "list skills", "find a skill",
-  "create a skill", "load skill", "import .skill file", "skill-store",
-  "browse skills", "search skills", "pin skill", or any request involving
-  managing a collection of agent skills. Use this skill whenever the user
-  wants to organize, discover, or distribute skills across sessions.
+  On-demand skill loading from a local skill registry. Trigger on: "skill store",
+  "load skill", "find a skill", "list skills", "import skill", "skill-store",
+  "browse skills", "search skills", or any request to fetch a skill that is NOT
+  currently loaded in the active context.
+
+  This skill is NOT for managing the already-loaded skills in your prompt.
+  It is for accessing the much larger skill storage (~100s to 1000s) that you
+  only bring into context when you need them. Think of it as a lazy loader:
+  the skills here stay on disk until you explicitly call for them via CLI.
 ---
 
 # Skill Store
 
-A CLI for managing a folder-based registry of agent skills at `~/.skill-store/`.
-Load skills on demand, pin favorites, search by name/description, and import
-`.skill` bundle files.
+Your active context holds ~10 skills. The skill store holds everything else.
 
----
+Use this CLI to browse, search, and pull skills on demand from
+`~/.skill-store/` — without polluting your context window.
 
 ## Quick Start
 
 ```bash
-# Initialize the store (one-time)
-skill-store init
-
-# Create your first skill
-skill-store create-new
-
-# See what's available
-skill-store list
-
-# Read a skill's contents
-skill-store preview <slug>
-skill-store load <slug>
+skill-store list          # what's available (not what's loaded)
+skill-store search web    # find by keyword
+skill-store load <slug>   # read a skill into context
 ```
-
----
 
 ## Commands
 
-### `skill-store init`
+| Command | What it does |
+|---|---|
+| `list` | Paginated list (pinned first). `--json` for machine output |
+| `search <query>` | Full-text search names + descriptions |
+| `load <slug>` | Print path, SKILL.md path, tree. `--json` for machine output |
+| `preview <slug>` | Print first 100 lines of SKILL.md |
+| `pin <slug>` / `unpin <slug>` | Move to top / back to alphabetical |
 
-Scaffold the store directory, create `index.json`, and `git init` for
-automatic backups. Idempotent — safe to run again.
+## Installing the CLI
 
-```bash
-skill-store init
-```
+See [`references/install.md`](references/install.md).
 
-### `skill-store sync`
+## Adding Skills
 
-Scan `~/.skill-store/skills/` for skill folders and `.skill` files, rebuild
-the index, and create a git snapshot.
-
-- `.skill` files are auto-extracted (zip format → folder) on sync
-- On collision: in a terminal you get prompted to overwrite/skip/rename;
-  in non-TTY mode it errors cleanly
-- Bad zips or corrupt files are reported and skipped
-
-```bash
-skill-store sync
-```
-
-### `skill-store create-new`
-
-Interactive wizard. Prompts for slug (validated: lowercase kebab-case, no
-collisions), name, and description. Creates the folder and a templated
-`SKILL.md`.
-
-```bash
-skill-store create-new
-```
-
-### `skill-store load <slug>`
-
-Print the absolute path, SKILL.md path, and folder tree for a skill.
-
-```bash
-skill-store load web-scraper          # human-readable
-skill-store load web-scraper --json   # machine-readable
-```
-
-JSON output includes: `slug`, `name`, `description`, `path`, `skillmd`,
-`tree` (array of tree lines).
-
-### `skill-store preview <slug>`
-
-Print the first 100 lines of a skill's `SKILL.md` as plain text to stdout.
-No formatting, no tree — just the raw content so you know what you're
-dealing with.
-
-```bash
-skill-store preview web-scraper
-```
-
-If the file exceeds 100 lines, a `... (truncated, N total lines)` message
-is printed to stderr.
-
-### `skill-store list`
-
-Paginated listing (20 per page). Pinned skills appear first in order,
-then alphabetical by slug.
-
-```bash
-skill-store list               # page 1
-skill-store list --page 2      # page 2
-skill-store list --json        # machine-readable
-```
-
-JSON output: `{page, total_pages, total, pinned[], skills[{slug, name,
-description, pinned}]}`
-
-### `skill-store search <query>`
-
-Case-insensitive full-text search across skill names and descriptions.
-Name matches sort before description matches, then alphabetical.
-
-```bash
-skill-store search scraper
-skill-store search "web" --json
-```
-
-JSON output: `{query, results, skills[{slug, name, description,
-matched_field}]}`
-
-### `skill-store pin <slug>` / `skill-store unpin <slug>`
-
-Pin a skill to the top of the list. Unpin to return it to alphabetical
-order.
-
-```bash
-skill-store pin web-scraper
-skill-store unpin web-scraper
-```
-
----
-
-## The Store Layout
-
-```
-~/.skill-store/
-├── index.json          # Auto-managed catalog (never hand-edit)
-├── skills/             # All skill folders
-│   ├── web-scraper/
-│   │   ├── SKILL.md
-│   │   ├── scripts/
-│   │   └── references/
-│   └── ...
-└── .git/               # Automatic git backup
-```
-
-### `index.json` schema
-
-```json
-{
-  "version": 1,
-  "pinned": ["web-scraper"],
-  "skills": [
-    {
-      "slug": "web-scraper",
-      "name": "Web Scraper",
-      "description": "Extract and structure data from web pages",
-      "path": "skills/web-scraper",
-      "created": "2026-05-16T10:00:00Z",
-      "updated": "2026-05-16T10:00:00Z"
-    }
-  ],
-  "stats": {
-    "total": 1,
-    "pinned": 1,
-    "updated_at": "2026-05-16T10:00:00Z"
-  }
-}
-```
-
----
-
-## Skill Format
-
-Every skill is a folder with a `SKILL.md` at its root:
-
-```
-<slug>/
-├── SKILL.md              # Required. YAML frontmatter + markdown body
-│   ├── name: string      # Human-readable name
-│   └── description: string  # Trigger description (what this skill does)
-├── scripts/              # Optional. Executable helpers
-├── references/           # Optional. Docs loaded on demand
-└── assets/               # Optional. Templates, icons, etc.
-```
-
----
-
-## Importing `.skill` Bundles
-
-A `.skill` file is just a zip of a skill folder. Drop it into
-`~/.skill-store/skills/` and run `skill-store sync` — it gets extracted
-and indexed automatically.
-
-```bash
-# Drop the bundle
-cp path/to/web-scraper.skill ~/.skill-store/skills/
-
-# Sync picks it up
-skill-store sync
-```
-
----
+| Source | Where to look |
+|---|---|
+| Community packages | See [`references/npx-skills.md`](references/npx-skills.md) |
+| `.skill` bundles | See [`references/importing.md`](references/importing.md) |
+| Create your own | See [`references/creating.md`](references/creating.md) |
 
 ## Environment
 
-| Variable | Purpose |
-|---|---|
-| `SKILL_STORE_PATH` | Override the store location (default: `~/.skill-store/`) |
-
-Useful for testing or isolating stores per project:
-
-```bash
-export SKILL_STORE_PATH=/path/to/custom-store
-skill-store init
-skill-store create-new
-```
+| Variable | Default | Purpose |
+|---|---|---|
+| `SKILL_STORE_PATH` | `~/.skill-store/` | Override store location |
