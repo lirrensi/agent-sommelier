@@ -173,6 +173,7 @@ def week_range(d: date) -> tuple[date, date]:
 
 def rebuild_weekly_summary(week_label: str):
     """Rebuild a weekly summary from ALL archived files in that ISO week."""
+    WEEKLY_DIR.mkdir(parents=True, exist_ok=True)
     items = []
     for path in sorted(ARCHIVE_DIR.glob("*.md")):
         file_date = parse_date_from_filename(path.name)
@@ -232,6 +233,8 @@ def rebuild_weekly_summary(week_label: str):
 
 def compress_episodic():
     """Move old episodic files to archive/ and rebuild affected weekly summaries."""
+    ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    WEEKLY_DIR.mkdir(parents=True, exist_ok=True)
     cutoff = date.today() - timedelta(days=ARCHIVE_DAYS)
     affected_weeks = set()
 
@@ -283,6 +286,7 @@ def rebuild_all_weekly_summaries():
 
 def compress_monthly():
     """Roll completed-month weekly summaries into monthly digests."""
+    MONTHLY_DIR.mkdir(parents=True, exist_ok=True)
     if not WEEKLY_DIR.exists():
         return
 
