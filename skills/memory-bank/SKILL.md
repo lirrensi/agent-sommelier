@@ -13,6 +13,7 @@ A persistent memory system for storing knowledge that survives across conversati
 - `./memory/episodic/`
 - `./memory/semantic/`
 - `./memory/procedural/`
+- `./memory/INDEX.md` (auto-maintained — see below)
 
 ---
 
@@ -26,6 +27,7 @@ A persistent memory system for storing knowledge that survives across conversati
 - **Write for resumption**: Notes should be self-contained — a future session with zero context should still understand them.
 - **Bias toward usefulness**: Save things that may matter later, especially details that are easy to forget but annoying to rediscover.
 - **Tags are first-class**: Tag memories so they can be searched quickly across domains, projects, people, and topics with `rg`.
+- **INDEX.md is the map**: After creating or updating memories, rebuild `INDEX.md` so future sessions (and you) can scan the whole landscape in seconds.
 
 ---
 
@@ -181,103 +183,106 @@ Multiple episodic files per day are normal and encouraged. Semantic and procedur
 
 ---
 
-## Creating a Memory File
+## Optional YAML Fields (Obsidian-Compatible)
 
-Use your native file tools to create and edit memory files.
+The shared frontmatter supports extra fields. Use any, all, or none — they are optional.
 
-**Shared frontmatter fields:**
-```
+```yaml
 ---
 summary: "One line — specific enough to know if you need to read this"
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
-memory_type: episodic | semantic | procedural
+memory_type: episodic | semantic | procedural | decision | person | project
 tags: [optional, tags]
+status: active | superseded | draft | archived
+confidence: certain | likely | tentative | deprecated
+related: [other_file.md, another.md]
+aliases: [alt-name]
+source: "where this came from"
 ---
-
 ```
 
-**Episodic template:**
+- `status`: mark outdated files with `superseded` instead of deleting them
+- `confidence`: signal how solid this knowledge is
+- `related`: backlinks to other memory files for graph traversal
+- `aliases`: alternate names to search by
+- `source`: URL, conversation ID, document name, or person
+
+These fields make the memory graph richer without adding complexity for simple notes.
+
+---
+
+## Templates
+
+Templates live in `skills/memory-bank/templates/`. Copy the one matching your memory type and fill it in.
+
+| Template | Use when |
+|---|---|
+| `templates/episodic.md` | Recording an event, meeting, incident, or session |
+| `templates/semantic.md` | Capturing durable facts, state, preferences, or constraints |
+| `templates/procedural.md` | Writing a repeatable workflow, checklist, or how-to |
+| `templates/decision.md` | Documenting an architectural or strategic decision (ADR style) |
+| `templates/person.md` | Profiling a person — client, colleague, contact |
+| `templates/project.md` | Tracking a project's current state, risks, and milestones |
+
+**How to use:**
+1. Pick the template that matches what you're saving
+2. Copy it into the correct `memory/<type>/` folder with a meaningful filename
+3. Fill in the frontmatter and body
+4. Run the index script (see below)
+
+> **Use only the sections that fit.** A memory for a client call looks different from a debugging session — that's fine.
+
+---
+
+## Scripts
+
+Helper scripts live in `skills/memory-bank/scripts/`. Run them from the project root.
+
+| Script | Purpose |
+|---|---|
+| `scripts/init.py` | Scaffold `./memory/` with core folders and a starter `INDEX.md` |
+| `scripts/index.py` | Scan all memories and rebuild `memory/INDEX.md` with links, summaries, and tag indexes |
+
+**After creating or updating memories, rebuild the index:**
+
+```bash
+python skills/memory-bank/scripts/index.py
 ```
----
-summary: "Debugging session that found the auth cookie domain mismatch"
-created: YYYY-MM-DD
-updated: YYYY-MM-DD
-memory_type: episodic
-tags: [code, auth, debugging, incident]
+
+This keeps `INDEX.md` as a living map of everything saved. Future sessions should check `INDEX.md` first for orientation.
+
 ---
 
-# Title
+## INDEX.md Maintenance
 
-[Write the event clearly enough that a future session understands what happened and why it mattered]
+`INDEX.md` lives at `./memory/INDEX.md`. It is auto-generated — do not hand-edit it.
+
+**What it contains:**
+- Table of contents by memory type
+- Every memory file as a link + its `summary` line
+- Status badges (e.g., `[superseded]`) for quick filtering
+- A full tag index at the bottom
+
+**When to rebuild:**
+- After creating a new memory
+- After updating a memory with a changed `summary`, `tags`, or `status`
+- After batch cleanup or reorganization
+- Before ending a session where memory work happened
+
+**How to rebuild:**
+```bash
+python skills/memory-bank/scripts/index.py
 ```
 
-**Semantic template:**
+**Orientation shortcut for future sessions:**
+```bash
+# See the whole landscape
+bat ./memory/INDEX.md
+
+# Or just the summaries
+grep "^\- \[" ./memory/INDEX.md
 ```
----
-summary: "Current auth configuration constraints for production"
-created: YYYY-MM-DD
-updated: YYYY-MM-DD
-memory_type: semantic
-tags: [code, auth, configuration, project-helios]
----
-
-# Title
-
-[Write the current known state, preferences, constraints, or facts that should remain current over time]
-```
-
-**Procedural template:**
-```
----
-summary: "Safe production deploy workflow"
-created: YYYY-MM-DD
-updated: YYYY-MM-DD
-memory_type: procedural
-tags: [code, deploy, workflow, operations]
----
-
-# Title
-
-[Write the repeatable process clearly enough that someone can follow it later]
-```
-
-**Some section ideas** (use only what fits):
-- **Context** — why this matters, background
-- **Key Decisions** — what was decided and why
-- **Details / Findings** — the actual content worth saving
-- **Current State** — the up-to-date truth right now
-- **Procedure / Checklist** — ordered steps or repeatable instructions
-- **Lessons Learned** — what this teaches for future work, mistakes to avoid, or patterns worth reusing
-- **People / Contacts** — who's involved
-- **Next Steps** — what to do next
-- **Didn't Work** — dead ends to avoid
-
-There's no required structure. A memory for a client call looks different from a debugging session — that's fine.
-
----
-
-## Editing an Existing Memory
-
-Use your native file editing tools to update memory files.
-
-### Update episodic when:
-- You're still actively adding details to the same event or session
-- You want to complete or correct the record of what happened
-
-### Update semantic when:
-- The current state, preference, fact, or constraint has changed
-- You learned something that refines a long-lived record
-- You want one stable file to represent the latest understanding
-
-### Update procedural when:
-- The workflow changed
-- A checklist was improved
-- You discovered a safer, faster, or clearer way to do the task
-
-When a change deserves both history and current state, do both:
-- create or update an `episodic` file for the event
-- update the relevant `semantic` or `procedural` file for the lasting takeaway
 
 ---
 
@@ -288,6 +293,9 @@ When a change deserves both history and current state, do both:
 rg --files ./memory | sort
 ```
 This shows the files that exist across all memory types — a fast orientation to what's here.
+
+### Read the index
+cat ./memory/INDEX.md
 
 ### Search by memory type
 ```bash
@@ -402,6 +410,7 @@ If the user asks to "clean up my memories", a good default is:
 - archive or mark outdated material
 - tighten titles and tags
 - leave meaningful history intact
+- **rebuild `INDEX.md`** so the map reflects reality
 
 ---
 
@@ -445,3 +454,5 @@ By default, organize memory by type:
 - `./memory/procedural/`
 
 You may also encounter or be instructed to use a more structured layout such as `./memory/semantic/clients/` or `./memory/procedural/operations/`. Follow whatever structure exists; if none exists, use the default type-based layout.
+
+**New:** Decision, person, and project memories may live in their respective type folders or in a flat structure — consistency matters more than depth. If you create `./memory/decision/`, `./memory/person/`, or `./memory/project/`, the index script will find and catalog them automatically.
