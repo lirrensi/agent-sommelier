@@ -422,6 +422,7 @@ def cmd_sync(ctx: click.Context) -> None:
             skill_entry = {
                 "slug": slug,
                 "name": meta.get("name", slug) if meta else slug,
+                "version": meta.get("version", "1") if meta else "1",
                 "description": meta.get("description", "") if meta else "",
                 "path": f"{SKILLS_DIR_NAME}/{slug}",
                 "created": _get_created_time(entry),
@@ -529,6 +530,7 @@ def cmd_create_new(ctx: click.Context) -> None:
 
     skill_md_content = f"""---
 name: {name}
+version: 1
 description: {description}
 ---
 
@@ -584,6 +586,7 @@ def cmd_load(ctx: click.Context, slug: str, json: bool) -> None:
         result = {
             "slug": slug,
             "name": skill["name"],
+            "version": skill.get("version", "1"),
             "description": skill.get("description", ""),
             "path": str(skill_path.resolve()),
             "skillmd": str((skill_path / "SKILL.md").resolve()),
@@ -758,6 +761,7 @@ def cmd_list(ctx: click.Context, page: int, json: bool) -> None:
                 {
                     "slug": s["slug"],
                     "name": s["name"],
+                    "version": s.get("version", "1"),
                     "description": s["description"],
                     "pinned": s["slug"] in pinned_slugs,
                 }
@@ -884,6 +888,7 @@ def cmd_search(ctx: click.Context, query: str, json: bool) -> None:
             index_results.append({
                 "slug": skill["slug"],
                 "name": skill["name"],
+                "version": skill.get("version", "1"),
                 "description": skill.get("description", ""),
                 "match_source": "name" if name_match else "description",
                 "match_count": 0,
@@ -912,14 +917,17 @@ def cmd_search(ctx: click.Context, query: str, json: bool) -> None:
         if slug not in index_slugs:
             name = slug
             desc = ""
+            vers = "1"
             for s in index["skills"]:
                 if s["slug"] == slug:
                     name = s["name"]
                     desc = s.get("description", "")
+                    vers = s.get("version", "1")
                     break
             index_results.append({
                 "slug": slug,
                 "name": name,
+                "version": vers,
                 "description": desc,
                 "match_source": "content",
                 "match_count": len(data["matches"]),
@@ -958,6 +966,7 @@ def cmd_search(ctx: click.Context, query: str, json: bool) -> None:
             entry: dict[str, Any] = {
                 "slug": r["slug"],
                 "name": r["name"],
+                "version": r.get("version", "1"),
                 "description": r["description"],
                 "match_source": r["match_source"],
                 "match_count": r["match_count"],

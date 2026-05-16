@@ -502,7 +502,7 @@ class TestLoad:
         result = cli_run(["load", "my-tool", "-j"], store)
         assert result.exit_code == 0
         data = json.loads(result.output)
-        assert set(data.keys()) == {"slug", "name", "description", "path", "skillmd", "tree"}
+        assert set(data.keys()) == {"slug", "name", "version", "description", "path", "skillmd", "tree"}
 
     def test_load_nonexistent_skill(self, tmp_path):
         store = tmp_path / "store"

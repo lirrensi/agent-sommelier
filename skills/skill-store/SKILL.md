@@ -1,5 +1,6 @@
 ---
 name: skill-store
+version: 1
 description: >
   On-demand skill loading from a local skill registry. Trigger on: "skill store",
   "load skill", "find a skill", "list skills", "import skill", "skill-store",
