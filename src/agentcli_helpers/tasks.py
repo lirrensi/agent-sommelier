@@ -62,7 +62,8 @@ PRIORITY_LABELS = {0: "p0", 1: "p1", 2: "p2", 3: "p3", 4: "p4"}
 # Map old named priorities to numeric for backwards compat
 _NAMED_PRIORITY_MAP = {"urgent": 0, "high": 1, "medium": 2, "low": 3}
 # Reverse map for CLI convenience aliases
-_PRIORITY_ALIASES = {"critical": 0, "urgent": 0, "high": 1, "medium": 2, "low": 3, "backlog": 4}
+_PRIORITY_ALIASES = {"critical": 0, "urgent": 0, "high": 1, "medium": 2, "low": 3, "backlog": 4,
+                     "p0": 0, "p1": 1, "p2": 2, "p3": 3, "p4": 4}
 
 # ---------------------------------------------------------------------------
 # File headers — written to the top of each YAML file when saved
@@ -803,7 +804,7 @@ def _parse_dep_option(dep_str: str) -> dict[str, str]:
 @main.command()
 @click.argument("title")
 @click.option("--tag", "-t", "tags", multiple=True, help="Tag(s) to apply (repeatable)")
-@click.option("--priority", "-p", help="Priority: 0-4 or name (critical, urgent, high, medium, low, backlog)")
+@click.option("--priority", "-p", help="Priority: p0-p4, 0-4, or name (critical, urgent, high, medium, low, backlog)")
 @click.option("--source", "-s", type=click.Choice(list(VALID_SOURCES)), default="agent", help="Source of the task")
 @click.option("--dep", "deps", multiple=True, help="Dependency: id:type (e.g. TSK-0042:blocks, TSK-0017:relates)")
 @click.option("--related", "-r", help="Related task ID (shorthand for --dep id:relates)")
@@ -830,7 +831,7 @@ def add(title: str, tags: tuple[str, ...], priority: str | None, source: str,
 @click.option("--status", type=click.Choice(list(VALID_STATUSES)), help="Filter by status")
 @click.option("--tag", "tags", multiple=True, help="Filter by tag (repeatable, AND logic)")
 @click.option("--tag-any", "tags_any", multiple=True, help="Filter by tag (OR logic, repeatable)")
-@click.option("--priority", help="Filter by priority (0-4 or name like urgent, high)")
+@click.option("--priority", help="Filter by priority (p0-p4, 0-4, or name like urgent, high)")
 @click.option("--source", type=click.Choice(list(VALID_SOURCES)), help="Filter by source")
 @click.option("--related", "-r", help="Filter by related/dep task ID")
 @click.option("--text", "-t", help="Full-text search (combined with other filters)")
@@ -971,7 +972,7 @@ def show(task_id: str):
 @click.argument("task_id")
 @click.option("--status", type=click.Choice(list(VALID_STATUSES)), help="Change status")
 @click.option("--tag", "-t", "tags", multiple=True, help="Tag(s) to append (repeatable)")
-@click.option("--priority", "-p", help="Change priority (0-4 or name like urgent, high)")
+@click.option("--priority", "-p", help="Change priority (p0-p4, 0-4, or name like urgent, high)")
 @click.option("--dep", "deps", multiple=True, help="Append dependency: id:type (repeatable)")
 @click.option("--related", "-r", help="Set related task ID (shorthand for --dep id:relates)")
 @click.option("--notes", "-n", help="Append a note (use --replace-notes to overwrite)")
