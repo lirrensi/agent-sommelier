@@ -168,7 +168,7 @@ def main(output: str | None, all_monitors: bool):
     else:
         click.echo("Failed to take screenshot.", err=True)
         click.echo(
-            "Install with: uv tool install agentcli-helpers[screenshot]", err=True
+            "Install with: uv tool install agent-sommelier-cli[screenshot]", err=True
         )
         sys.exit(1)
 

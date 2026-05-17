@@ -19,7 +19,7 @@ screenshot --help
 
 If not installed:
 ```bash
-uv tool install agentcli-helpers
+uv tool install "git+https://github.com/lirrensi/agent-sommelier"
 ```
 
 ## Usage

@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 
-from agentcli_helpers.skill_store import cli
+from agent_sommelier.skill_store import cli
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1837,7 +1837,7 @@ class TestPackageVersion:
 
     def test_version_matches_pyproject_toml(self):
         """The dynamic __version__ must match pyproject.toml."""
-        from agentcli_helpers import __version__
+        from agent_sommelier import __version__
 
         pyproject = (
             Path(__file__).resolve().parent.parent / "pyproject.toml"

@@ -1,4 +1,4 @@
-"""AgentCLI Helpers - Desktop assistant CLI tools for AI agents."""
+"""Agent Sommelier - A capability sommelier for your coding agent."""
 
 from __future__ import annotations
 

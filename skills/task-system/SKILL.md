@@ -3,7 +3,7 @@ name: task-system
 description: "Use this skill when you need to manage project tasks — create, update, complete, prioritize, filter, review, track dependencies, or find unblocked work. Trigger on: 'add a task', 'create task', 'show tasks', 'what's next', 'mark done', 'update task', 'task status', 'task history', 'next task', 'task inbox', 'list tasks', 'init tasks', 'task deps', 'ready tasks', 'blocked tasks', 'search tasks', 'tag-any', 'dependency graph'. Also use proactively when starting a new work session — check `tasks status` and `tasks ready` to orient yourself. This skill covers the project's static, file-based task system (persistent, in-repo history) with typed dependency tracking, ready queue, and priority management — NOT ephemeral runtime task tools."
 ---
 
-# AgentCLI Task System
+# Agent Sommelier Task System
 
 A lightweight, **static, file-based task management system** embedded directly in the repository. Tasks are permanent history — once created, they are never deleted. This system exists to help AI agents and humans manage project complexity with a simple CLI that needs no database, no server, and no internet.
 

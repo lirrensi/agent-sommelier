@@ -29,7 +29,7 @@ class TestBgRedesign(unittest.TestCase):
         self.jobs_root = self.temp_root / "agentcli_bgjobs"
         self.jobs_root.mkdir(parents=True, exist_ok=True)
 
-        import agentcli_helpers.bg as bg
+        import agent_sommelier.bg as bg
 
         bg.JOBS_DIR = self.jobs_root
         bg.RECORDS_DIR = self.jobs_root / "records"
@@ -49,7 +49,7 @@ class TestBgRedesign(unittest.TestCase):
             f"""
             import sys
             sys.path.insert(0, {str(BG_SRC)!r})
-            from agentcli_helpers import bg
+            from agent_sommelier import bg
             bg.FRIENDLY_WORDS = ['sleepy']
             sys.argv = ['bg', {", ".join(repr(a) for a in args)}]
             bg.main()
@@ -120,12 +120,12 @@ class TestBgRedesign(unittest.TestCase):
     def test_create_job_returns_immediately_and_treats_launching_as_running(
         self,
     ) -> None:
-        import agentcli_helpers.bg as bg
+        import agent_sommelier.bg as bg
 
         bg.FRIENDLY_WORDS = ["sleepy"]
         cmd = 'python -c "import time; time.sleep(1)"'
 
-        with mock.patch("agentcli_helpers.bg.spawn_launch_worker_for_job"):
+        with mock.patch("agent_sommelier.bg.spawn_launch_worker_for_job"):
             start = time.perf_counter()
             name = bg.create_job(cmd)
             elapsed = time.perf_counter() - start
@@ -141,11 +141,11 @@ class TestBgRedesign(unittest.TestCase):
         self.assertTrue((self.jobs_root / "index.json").exists())
 
     def test_create_job_cleans_up_when_initial_write_fails(self) -> None:
-        import agentcli_helpers.bg as bg
+        import agent_sommelier.bg as bg
 
         cmd = 'python -c "print(1)"'
         with mock.patch(
-            "agentcli_helpers.bg.write_meta", side_effect=RuntimeError("boom")
+            "agent_sommelier.bg.write_meta", side_effect=RuntimeError("boom")
         ):
             with self.assertRaises(RuntimeError):
                 bg.create_job(cmd)
@@ -155,11 +155,11 @@ class TestBgRedesign(unittest.TestCase):
         self.assertFalse(records_dir.exists() and any(records_dir.iterdir()))
 
     def test_create_job_cleans_up_when_index_write_fails(self) -> None:
-        import agentcli_helpers.bg as bg
+        import agent_sommelier.bg as bg
 
         cmd = 'python -c "print(1)"'
         with mock.patch(
-            "agentcli_helpers.bg.save_index", side_effect=RuntimeError("boom")
+            "agent_sommelier.bg.save_index", side_effect=RuntimeError("boom")
         ):
             with self.assertRaises(RuntimeError):
                 bg.create_job(cmd)
@@ -169,13 +169,13 @@ class TestBgRedesign(unittest.TestCase):
         self.assertFalse(records_dir.exists() and any(records_dir.iterdir()))
 
     def test_create_job_keeps_record_when_launch_worker_fails_to_start(self) -> None:
-        import agentcli_helpers.bg as bg
+        import agent_sommelier.bg as bg
 
         bg.FRIENDLY_WORDS = ["sleepy"]
         cmd = 'python -c "print(1)"'
 
         with mock.patch(
-            "agentcli_helpers.bg.subprocess.Popen", side_effect=OSError("boom")
+            "agent_sommelier.bg.subprocess.Popen", side_effect=OSError("boom")
         ):
             name = bg.create_job(cmd)
 
@@ -187,7 +187,7 @@ class TestBgRedesign(unittest.TestCase):
         self.assertIn("launch worker failed to start", snapshot["record_issue"])
 
     def test_launch_worker_marks_failed_when_target_launch_fails(self) -> None:
-        import agentcli_helpers.bg as bg
+        import agent_sommelier.bg as bg
 
         uid = "launchfail123"
         name = "sleepy-python"
@@ -226,7 +226,7 @@ class TestBgRedesign(unittest.TestCase):
         )
 
         with mock.patch(
-            "agentcli_helpers.bg.launch_process_for_job_inner",
+            "agent_sommelier.bg.launch_process_for_job_inner",
             side_effect=RuntimeError("boom"),
         ):
             bg.launch_process_for_job_worker(
@@ -256,7 +256,7 @@ class TestBgRedesign(unittest.TestCase):
         self.assertIn(status_json["status"], {"running", "completed"})
 
     def test_launch_pid_probe_updates_pid_best_effort(self) -> None:
-        import agentcli_helpers.bg as bg
+        import agent_sommelier.bg as bg
 
         uid = "probe123"
         name = "sleepy-probe"
@@ -296,7 +296,7 @@ class TestBgRedesign(unittest.TestCase):
         )
 
         with mock.patch(
-            "agentcli_helpers.bg.find_pid_from_launch_worker", return_value=4321
+            "agent_sommelier.bg.find_pid_from_launch_worker", return_value=4321
         ):
             bg.probe_launch_pid_for_job(uid, delay_seconds=0)
 
@@ -307,7 +307,7 @@ class TestBgRedesign(unittest.TestCase):
         self.assertTrue((record_dir / "meta.json").exists())
 
         with mock.patch(
-            "agentcli_helpers.bg.inspect_process",
+            "agent_sommelier.bg.inspect_process",
             return_value={"process_state": "alive", "is_running": True},
         ):
             snapshot = bg.build_view_from_meta(
@@ -317,7 +317,7 @@ class TestBgRedesign(unittest.TestCase):
         self.assertIsNone(snapshot["record_issue"])
 
     def test_launch_pid_probe_preserves_record_when_pid_cannot_be_found(self) -> None:
-        import agentcli_helpers.bg as bg
+        import agent_sommelier.bg as bg
 
         uid = "probe-miss123"
         name = "sleepy-probe-miss"
@@ -357,7 +357,7 @@ class TestBgRedesign(unittest.TestCase):
         )
 
         with mock.patch(
-            "agentcli_helpers.bg.find_pid_from_launch_worker", return_value=None
+            "agent_sommelier.bg.find_pid_from_launch_worker", return_value=None
         ):
             bg.probe_launch_pid_for_job(uid, delay_seconds=0)
 

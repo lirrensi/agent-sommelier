@@ -51,7 +51,7 @@ from rich.table import Table
 from rich.tree import Tree
 from rich.syntax import Syntax
 
-from agentcli_helpers import __version__
+from agent_sommelier import __version__
 
 # ---------------------------------------------------------------------------
 # JSON helper

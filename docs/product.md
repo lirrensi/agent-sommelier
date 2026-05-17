@@ -1,21 +1,21 @@
-# AgentCLI Helpers — Product Specification
+# Agent Sommelier — Product Specification
 
 > Desktop superpowers for your AI agent. Simple CLI tools that just work.
 
 ## Overview
 
-AgentCLI Helpers is a collection of CLI tools and skills that extend AI agent capabilities with desktop integration. Each tool is a standalone command with no daemon, no database, and no configuration required.
+Agent Sommelier is a collection of CLI tools, skills, and systems that extend AI agent capabilities with desktop integration. Each tool is a standalone command with no daemon, no database, and no configuration required.
 
 **Installation:**
 ```bash
-uv tool install agentcli-helpers
+uv tool install agent-sommelier-cli
 ```
 
 **Optional extras:**
 ```bash
-uv tool install agentcli-helpers[crony]    # Cron job support
-uv tool install agentcli-helpers[screenshot]  # Screenshot support
-uv tool install agentcli-helpers[all]      # Everything
+uv tool install agent-sommelier-cli[crony]    # Cron job support
+uv tool install agent-sommelier-cli[screenshot]  # Screenshot support
+uv tool install agent-sommelier-cli[all]      # Everything
 ```
 
 ---

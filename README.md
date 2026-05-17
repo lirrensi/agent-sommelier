@@ -1,13 +1,15 @@
-# AgentCLI Helpers
+# Agent Sommelier
 
-> Desktop superpowers for your AI agent. Simple CLI tools that just work.
+> A capability sommelier for your coding agent. Tools, skills, and systems — curated on demand.
+
+The name says it. An **agent-sommelier** curates exactly what your AI agent needs — desktop tools, agent skills, persistent memory, task management — and presents them on a silver platter. You don't install everything. You select what fits your mission.
 
 ## Skills
 
 This repo includes **agent skills** for self-installing tools. Install via npm:
 
 ```bash
-npx skills add https://github.com/lirrensi/agent-cli-helpers
+npx skills add https://github.com/lirrensi/agent-sommelier
 ```
 
 Available skills:
@@ -47,27 +49,27 @@ And **memory** itself — every conversation starts from scratch. The agent can'
 
 ## The Solution
 
-A small collection of CLI tools that wrap the messy stuff. No daemon. No database. Just files and commands that behave the way you expect.
+A curated collection of CLI tools, agent skills, and systems that wrap the messy stuff. No daemon. No database. Just files and commands that behave the way you expect.
 
 ```bash
 # Install from GitHub
-uv tool install "git+https://github.com/lirrensi/agent-cli-helpers"
+uv tool install "git+https://github.com/lirrensi/agent-sommelier"
 ```
 
 That's it. Pick what you need — including the **memory-bank** skill for persistent context and **skill-store** for lazy-loading hundreds more:
 
 | Tool | What it does | Install |
 |------|--------------|---------|
-| `crony` | Cron jobs with natural language scheduling | `uv tool install "git+https://github.com/lirrensi/agent-cli-helpers#crony"` |
+| `crony` | Cron jobs with natural language scheduling | `uv tool install "git+https://github.com/lirrensi/agent-sommelier#crony"` |
 | `notify` | Cross-platform desktop notifications | Built-in |
 | `bg` | Background jobs that don't disappear | Built-in |
-| `screenshot` | Screen capture that actually works | `uv tool install "git+https://github.com/lirrensi/agent-cli-helpers#screenshot"` |
+| `screenshot` | Screen capture that actually works | `uv tool install "git+https://github.com/lirrensi/agent-sommelier#screenshot"` |
 | `tasks` | In-repo task management with deps, queues, search, 12 statuses | Built-in |
 | `skill-store` | On-demand skill registry — list, search, load, pin, create | Built-in |
 
 Or install everything:
 ```bash
-uv tool install "git+https://github.com/lirrensi/agent-cli-helpers"
+uv tool install "git+https://github.com/lirrensi/agent-sommelier"
 ```
 
 ## Tools
@@ -263,12 +265,12 @@ skills/
 ├── calm-down/SKILL.md
 ├── micropatch/SKILL.md
 ├── task-system/SKILL.md
-└── skill-store/SKILL.md       # ← New: on-demand skill loading from local registry
+└── skill-store/SKILL.md       # ← On-demand skill loading from local registry
 ```
 
 The pattern is simple:
 1. Agent checks if tool exists: `crony --help`
-2. If not, install it: `npx skills add https://github.com/lirrensi/agent-cli-helpers`
+2. If not, install it: `npx skills add https://github.com/lirrensi/agent-sommelier`
 3. Use it
 
 No MCP servers. No configuration. No OAuth. Just tools.
@@ -282,31 +284,31 @@ No MCP servers. No configuration. No OAuth. Just tools.
 ## Repository Map
 
 ```
-AgentCLI_Helpers/
-├── src/agentcli_helpers/    # CLI tool implementations (Python)
+agent-sommelier/
+├── src/agent_sommelier/      # CLI tool implementations (Python)
 │   ├── __init__.py
-│   ├── notify.py            # Desktop notifications
-│   ├── bg.py                # Background job manager
-│   ├── crony.py             # Cron job scheduler
-│   ├── screenshot.py        # Screen capture
-│   ├── tasks.py             # In-repo task management
-│   └── skill_store.py       # On-demand skill registry CLI
-├── skills/                  # Agent skill definitions (14 skills)
-│   ├── memory-bank/         # Core. Episodic/semantic/procedural memories
-│   ├── task-system/         # In-repo task management with deps & queues
-│   ├── skill-store/         # On-demand skill loading from local registry
-│   ├── bg-jobs/             # Background jobs
-│   ├── crony/               # Natural language cron scheduling
-│   └── ...                  # (9 more skills)
-├── docs/                    # Architecture & product documentation
-│   ├── product.md           # Behavior specs & CLI reference
-│   └── arch.md              # Implementation details
-├── agent_chat/              # Design discussions & execution plans
-├── tests/                   # Test suite
-├── private/                 # Private scratch notes (gitignored)
-├── tasks/                   # Local task files (gitignored)
-├── pyproject.toml           # Package metadata & entry points
-├── uv.lock                  # Locked dependencies
+│   ├── notify.py             # Desktop notifications
+│   ├── bg.py                 # Background job manager
+│   ├── crony.py              # Cron job scheduler
+│   ├── screenshot.py         # Screen capture
+│   ├── tasks.py              # In-repo task management
+│   └── skill_store.py        # On-demand skill registry CLI
+├── skills/                   # Agent skill definitions (14 skills)
+│   ├── memory-bank/          # Core. Episodic/semantic/procedural memories
+│   ├── task-system/          # In-repo task management with deps & queues
+│   ├── skill-store/          # On-demand skill loading from local registry
+│   ├── bg-jobs/              # Background jobs
+│   ├── crony/                # Natural language cron scheduling
+│   └── ...                   # (9 more skills)
+├── docs/                     # Architecture & product documentation
+│   ├── product.md            # Behavior specs & CLI reference
+│   └── arch.md               # Implementation details
+├── agent_chat/               # Design discussions & execution plans
+├── tests/                    # Test suite
+├── private/                  # Private scratch notes (gitignored)
+├── tasks/                    # Local task files (gitignored)
+├── pyproject.toml            # Package metadata & entry points
+├── uv.lock                   # Locked dependencies
 └── README.md
 ```
 

@@ -3,17 +3,17 @@
 ## With `uv` (recommended)
 
 ```bash
-# Install from PyPI
-uv tool install agentcli-helpers
+# Install from git (primary)
+uv tool install "git+https://github.com/lirrensi/agent-sommelier"
 
-# Or install from git (latest)
-uv tool install git+https://github.com/lirrensi/agent-cli-helpers
+# Or install from PyPI (when published)
+# uv tool install agent-sommelier-cli
 ```
 
 ## With `pip`
 
 ```bash
-pip install agentcli-helpers
+# pip install agent-sommelier-cli    # Uncomment when published
 ```
 
 ## Verify

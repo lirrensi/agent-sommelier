@@ -3,8 +3,8 @@ revision = 3
 requires-python = ">=3.10"
 
 [[package]]
-name = "agentcli-helpers"
-version = "0.8.4"
+name = "agent-sommelier-cli"
+version = "0.8.5"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
@@ -39,7 +39,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agentcli-helpers", extras = ["crony", "screenshot"], marker = "extra == 'all'" },
+    { name = "agent-sommelier-cli", extras = ["crony", "screenshot"], marker = "extra == 'all'" },
     { name = "click", specifier = ">=8.1.0" },
     { name = "croniter", marker = "extra == 'crony'", specifier = ">=3.0.0" },
     { name = "dateparser", marker = "extra == 'crony'", specifier = ">=1.2.0" },

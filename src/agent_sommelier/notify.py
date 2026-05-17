@@ -42,7 +42,7 @@ def send_notification(title: str, body: str) -> bool:
             $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
             $xml.LoadXml($template)
             $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
-            [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("AgentCLI").Show($toast)
+            [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("Agent Sommelier").Show($toast)
             """
             subprocess.run(
                 ["powershell", "-Command", ps_script], check=True, capture_output=True

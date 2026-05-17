@@ -1,4 +1,4 @@
-# FILE: src/agentcli_helpers/bg.py
+# FILE: src/agent_sommelier/bg.py
 # PURPOSE: Manage detached background jobs with friendly names, stable UIDs, async launch workers, state refresh, and lightweight update events.
 # OWNS: bg CLI storage, naming, worker launch, process inspection, output capture, wait loops, and record cleanup.
 # EXPORTS: main (CLI entry point), create_job (launch helper), list_jobs (enumeration), load_job_snapshot (lookup), launch helpers, wait helpers
@@ -1528,7 +1528,7 @@ def spawn_launch_pid_probe_for_job(
             "import json",
             "import sys",
             f"sys.path.insert(0, {str(package_root)!r})",
-            "from agentcli_helpers.bg import probe_launch_pid_for_job",
+            "from agent_sommelier.bg import probe_launch_pid_for_job",
             "payload = json.loads(sys.stdin.read() or '{}')",
             "probe_launch_pid_for_job(payload['uid'], delay_seconds=payload.get('delay_seconds', 5))",
         ]
@@ -1591,7 +1591,7 @@ def spawn_launch_worker_for_job(
             "import sys",
             f"sys.path.insert(0, {str(package_root)!r})",
             "from pathlib import Path",
-            "from agentcli_helpers.bg import launch_process_for_job_worker",
+            "from agent_sommelier.bg import launch_process_for_job_worker",
             "payload = json.loads(sys.stdin.read() or '{}')",
             "launch_process_for_job_worker(",
             "    payload['uid'],",

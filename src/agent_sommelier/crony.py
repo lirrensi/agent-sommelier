@@ -35,7 +35,7 @@ try:
     from croniter import croniter
 except ImportError:
     click.echo("Error: crony requires extra dependencies.", err=True)
-    click.echo("Install with: uv tool install agentcli-helpers[crony]", err=True)
+    click.echo("Install with: uv tool install agent-sommelier-cli[crony]", err=True)
     sys.exit(1)
 
 # Job storage directory

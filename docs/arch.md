@@ -1,4 +1,4 @@
-# AgentCLI Helpers — Architecture
+# Agent Sommelier — Architecture
 
 This document describes the internal implementation of each tool. For product behavior and CLI interface, see `product.md`.
 
@@ -7,8 +7,8 @@ This document describes the internal implementation of each tool. For product be
 ## Project Structure
 
 ```
-AgentCLI_Helpers/
-├── src/agentcli_helpers/
+agent-sommelier/
+├── src/agent_sommelier/
 │   ├── __init__.py          # Package init, version
 │   ├── notify.py            # Desktop notifications
 │   ├── bg.py                # Background job manager
@@ -49,11 +49,11 @@ All tools use **Click** (`click >= 8.1.0`) for CLI argument parsing and command 
 ## Component: notify
 
 ### File
-`src/agentcli_helpers/notify.py`
+`src/agent_sommelier/notify.py`
 
 ### Entry Point
 ```python
-notify = "agentcli_helpers.notify:main"
+notify = "agent_sommelier.notify:main"
 ```
 
 ### Implementation
@@ -77,7 +77,7 @@ send_notification(title, body) -> bool
 **Windows (PowerShell):**
 - Uses `Windows.UI.Notifications.ToastNotificationManager`
 - Creates XML toast template with title and body
-- Shows toast via `CreateToastNotifier("AgentCLI").Show()`
+- Shows toast via `CreateToastNotifier("Agent Sommelier").Show()`
 
 **macOS (AppleScript):**
 - Uses `display notification "{body}" with title "{title}"`
@@ -97,11 +97,11 @@ send_notification(title, body) -> bool
 ## Component: bg
 
 ### File
-`src/agentcli_helpers/bg.py`
+`src/agent_sommelier/bg.py`
 
 ### Entry Point
 ```python
-bg = "agentcli_helpers.bg:main"
+bg = "agent_sommelier.bg:main"
 ```
 
 ### Commands
@@ -264,11 +264,11 @@ For output-match waits, the implementation SHOULD scan stdout/stderr incremental
 ## Component: crony
 
 ### File
-`src/agentcli_helpers/crony.py`
+`src/agent_sommelier/crony.py`
 
 ### Entry Point
 ```python
-crony = "agentcli_helpers.crony:main"
+crony = "agent_sommelier.crony:main"
 ```
 
 ### Commands
@@ -409,11 +409,11 @@ JSON list output SHOULD include the same computed `next_run` field so scripts an
 ## Component: tasks
 
 ### File
-`src/agentcli_helpers/tasks.py`
+`src/agent_sommelier/tasks.py`
 
 ### Entry Point
 ```python
-tasks = "agentcli_helpers.tasks:main"
+tasks = "agent_sommelier.tasks:main"
 ```
 
 ### Commands
@@ -455,11 +455,11 @@ The task system is static and file-based. `tasks.yaml` is the active source of t
 ## Component: skill_store
 
 ### File
-`src/agentcli_helpers/skill_store.py`
+`src/agent_sommelier/skill_store.py`
 
 ### Entry Point
 ```python
-skill-store = "agentcli_helpers.skill_store:main"
+skill-store = "agent_sommelier.skill_store:main"
 ```
 
 ### Purpose
@@ -480,11 +480,11 @@ The skill registry lives outside the repo at `~/.skill-store/` and is managed as
 ## Component: screenshot
 
 ### File
-`src/agentcli_helpers/screenshot.py`
+`src/agent_sommelier/screenshot.py`
 
 ### Entry Point
 ```python
-screenshot = "agentcli_helpers.screenshot:main"
+screenshot = "agent_sommelier.screenshot:main"
 ```
 
 ### Commands
