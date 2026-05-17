@@ -410,6 +410,44 @@ Take a screenshot.
 
 ---
 
+## Tool: tasks — In-Repo Task Management
+
+Static, file-backed task tracking for project work. Lives in `tasks/` with no database or service, and preserves history across sessions.
+
+**Commands:** `tasks init`, `tasks add`, `tasks list`, `tasks next`, `tasks ready`, `tasks blocked`, `tasks status`, `tasks show`, `tasks update`, `tasks close`, `tasks history`, `tasks search`, `tasks inbox`.
+
+**Use it for:** capturing work, tracking dependencies, finding the next unblocked task, and keeping the archive of completed work visible.
+
+---
+
+## Skill: task-system — How to Use Tasks Well
+
+Quick guidance for the in-repo task CLI. It explains statuses, dependency types, priority ordering, inbox flow, and the ready/blocked queues.
+
+**Location:** `skills/task-system/`
+
+---
+
+## Skill: memory-bank — Persistent Session Memory
+
+Long-lived memory for durable facts, decisions, and repeatable workflows across sessions. Use it when something should be remembered later, not just this chat.
+
+**Location:** `skills/memory-bank/`
+
+**Default shape:** `./memory/episodic/`, `./memory/semantic/`, `./memory/procedural/`, with an auto-maintained `./memory/INDEX.md`.
+
+---
+
+## Skill: skill-store — On-Demand Skill Registry
+
+Local skill registry for loading, browsing, pinning, and syncing agent skills without stuffing everything into context.
+
+**Location:** `skills/skill-store/`
+
+**Use it for:** discovering available skills, loading one when needed, and keeping a local registry current.
+
+---
+
 ## Skill: tmux — Terminal Session Control
 
 Control tmux/psmux sessions programmatically for SSH, REPLs, and parallel processes. Cross-platform: tmux on Linux/macOS, psmux on Windows.

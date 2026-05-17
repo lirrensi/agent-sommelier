@@ -13,12 +13,16 @@ AgentCLI_Helpers/
 │   ├── notify.py            # Desktop notifications
 │   ├── bg.py                # Background job manager
 │   ├── crony.py             # Cron job scheduler
-│   └── screenshot.py        # Screen capture
+│   ├── screenshot.py        # Screen capture
+│   └── tasks.py             # In-repo task management
 ├── skills/                  # Agent skills for self-install
 │   ├── bg-jobs/SKILL.md
 │   ├── crony/SKILL.md
 │   ├── desktop-notifications/SKILL.md
+│   ├── memory-bank/SKILL.md
 │   ├── screenshot/SKILL.md
+│   ├── task-system/SKILL.md
+│   ├── skill-store/SKILL.md
 │   └── edge-tts/SKILL.md
 ├── pyproject.toml           # Package metadata
 └── README.md                # User-facing docs
@@ -36,6 +40,7 @@ All tools use **Click** (`click >= 8.1.0`) for CLI argument parsing and command 
 
 ### Storage Pattern
 - **JSON files** for structured data (jobs, metadata)
+- **YAML files** for repo-local task state (`tasks/tasks.yaml`, `tasks/closed.yaml`)
 - **Temp directories** for transient data (screenshots, bg job output)
 - **Home directory** (`~`) for persistent config (`.crony/`)
 
@@ -398,6 +403,77 @@ Before rendering list output:
 Human-readable list output SHOULD include `Name`, `Type`, `Schedule`, `Next Run`, and `Command`.
 
 JSON list output SHOULD include the same computed `next_run` field so scripts and agents can reason about upcoming execution.
+
+---
+
+## Component: tasks
+
+### File
+`src/agentcli_helpers/tasks.py`
+
+### Entry Point
+```python
+tasks = "agentcli_helpers.tasks:main"
+```
+
+### Commands
+- `tasks init` — Bootstrap or repair the task files
+- `tasks add` — Create a new task
+- `tasks list` — List active tasks
+- `tasks next` — Show the next unblocked todo(s)
+- `tasks ready` — Show ready work only
+- `tasks blocked` — Show blocked work and blockers
+- `tasks status` — Session overview for active work
+- `tasks show` — Render one task in full
+- `tasks update` — Edit task fields and status
+- `tasks close` — Archive a task
+- `tasks history` — Browse closed tasks
+- `tasks search` — Full-text search across active + closed tasks
+- `tasks inbox` — Read the free-form inbox
+
+### Storage
+
+```
+tasks/
+├── inbox.md      # Free-form scratchpad for ideas and intake
+├── tasks.yaml    # Active task list and metadata
+└── closed.yaml   # Append-only closed archive
+```
+
+The task system is static and file-based. `tasks.yaml` is the active source of truth, `closed.yaml` is the archive, and the inbox is deliberately free-form intake. Statuses, priorities, dependencies, and notes are all persisted in YAML so the repo can carry work across sessions.
+
+### Behavior Notes
+
+- `tasks next` and `tasks ready` are queue views over `todo` work
+- typed deps include `blocks`, `parent`, `child`, `discovered`, and `relates`
+- `blocks` drives readiness and blocked-state reporting
+- `tasks update` can change status, tags, priority, deps, notes, and closure in one pass
+- `tasks history` and `tasks search` make the archive useful, not just hidden
+
+---
+
+## Component: skill_store
+
+### File
+`src/agentcli_helpers/skill_store.py`
+
+### Entry Point
+```python
+skill-store = "agentcli_helpers.skill_store:main"
+```
+
+### Purpose
+CLI for the local skill registry. It supports browsing, searching, loading, pinning, and syncing skill entries stored on disk so agents can keep context small while still discovering tools on demand.
+
+### Storage
+
+The skill registry lives outside the repo at `~/.skill-store/` and is managed as a local catalog of skill folders and metadata.
+
+### Behavior Notes
+
+- `skill-store` is a lazy loader, not a runtime dependency injection system
+- registry operations should keep the on-disk index and installed skill copies in sync
+- skills are loaded on demand so the agent only pulls context for what it needs
 
 ---
 
