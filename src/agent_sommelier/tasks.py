@@ -413,15 +413,38 @@ def _collect_all_tags(tasks: list[dict[str, Any]]) -> dict[str, int]:
     return dict(sorted(counts.items(), key=lambda x: x[1], reverse=True))
 
 
+def _normalize_text_list(value: Any) -> list[str]:
+    """Normalize appendable text fields to list[str]."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return value
+    return [str(value)]
+
+
 def _normalize_notes(notes: Any) -> list[str]:
     """Normalize notes to list[str]. Converts string to single-element list for backwards compat."""
-    if notes is None:
-        return []
-    if isinstance(notes, str):
-        return [notes]
-    if isinstance(notes, list):
-        return notes
-    return [str(notes)]
+    return _normalize_text_list(notes)
+
+
+def _normalize_evidence(evidence: Any) -> list[str]:
+    """Normalize evidence to list[str]. Converts string to single-element list for backwards compat."""
+    return _normalize_text_list(evidence)
+
+
+def _append_text_field(task: dict[str, Any], field: str, value: str | None,
+                       replace: bool = False) -> None:
+    """Append or replace a list-backed text field."""
+    if value is None:
+        return
+    existing = _normalize_text_list(task.get(field))
+    if replace or not existing:
+        task[field] = [value]
+    else:
+        existing.append(value)
+        task[field] = existing
 
 
 def _inbox_line_count() -> int:
@@ -511,11 +534,13 @@ def add_task(title: str, priority: int | str | None = None,
              source: str | None = None,
              deps: list[dict[str, str]] | None = None,
              related: str | None = None,
-             notes: str | None = None) -> dict[str, Any]:
+             notes: str | None = None,
+             evidence: str | None = None) -> dict[str, Any]:
     """Create a new task and prepend it to tasks.yaml.
 
     deps: list of {"id": "TSK-NNNN", "type": "<dep_type>"} dicts.
     related: legacy convenience — creates a "relates" dep entry if no deps given.
+    notes/evidence: optional appendable text fields stored as lists.
 
     Returns the created task dict.
     """
@@ -548,8 +573,9 @@ def add_task(title: str, priority: int | str | None = None,
     elif related:
         task["deps"] = [{"id": related, "type": "relates"}]
     if notes:
-        # Store as list[str] — single string becomes one-element list
-        task["notes"] = [notes]
+        _append_text_field(task, "notes", notes)
+    if evidence:
+        _append_text_field(task, "evidence", evidence)
 
     # Prepend: newest at top
     tasks.insert(0, task)
@@ -563,11 +589,13 @@ def update_task(task_id: str, status: str | None = None,
                 deps: list[dict[str, str]] | None = None,
                 related: str | None = None,
                 notes: str | None = None, replace_notes: bool = False,
+                evidence: str | None = None, replace_evidence: bool = False,
                 closed: bool | None = None) -> dict[str, Any]:
     """Update fields on an existing task. Tags and deps are appended, not replaced.
 
     deps: list of {"id": "TSK-NNNN", "type": "<dep_type>"} dicts to append.
     related: legacy convenience — appends a "relates" dep entry.
+    notes/evidence: append by default, or replace when requested.
 
     Returns the updated task dict.
     Raises ValueError if task not found.
@@ -604,14 +632,9 @@ def update_task(task_id: str, status: str | None = None,
         if not any(d.get("id") == related and d.get("type") == "relates" for d in existing_deps):
             existing_deps.append({"id": related, "type": "relates"})
     if notes is not None:
-        existing = _normalize_notes(task.get("notes"))
-        if replace_notes or not existing:
-            # --replace-notes or no existing notes → set fresh list
-            task["notes"] = [notes]
-        else:
-            # Default: append to existing list
-            existing.append(notes)
-            task["notes"] = existing
+        _append_text_field(task, "notes", notes, replace=replace_notes)
+    if evidence is not None:
+        _append_text_field(task, "evidence", evidence, replace=replace_evidence)
 
     if closed is True:
         task["closed"] = True
@@ -634,11 +657,12 @@ def update_task(task_id: str, status: str | None = None,
     return task
 
 
-def close_task(task_id: str, note: str | None = None) -> dict[str, Any]:
+def close_task(task_id: str, note: str | None = None, evidence: str | None = None) -> dict[str, Any]:
     """Move a task from tasks.yaml to closed.yaml. Preserves its status.
 
     Sets closed=True, adds 'closed_at' timestamp.
-    Appends optional --note to the existing notes field.
+    Appends optional --note to the existing notes field and --evidence to the
+    evidence field.
     Returns the closed task dict.
     Raises ValueError if task not found or already closed.
     """
@@ -660,9 +684,9 @@ def close_task(task_id: str, note: str | None = None) -> dict[str, Any]:
     task["closed_at"] = _now_iso()
     task["updated"] = _now_iso()
     if note:
-        existing_notes = _normalize_notes(task.get("notes"))
-        existing_notes.append(note)
-        task["notes"] = existing_notes
+        _append_text_field(task, "notes", note)
+    if evidence:
+        _append_text_field(task, "evidence", evidence)
 
     # Save active list
     save_tasks_yaml(meta, tasks)
@@ -750,6 +774,12 @@ def _task_text(task: dict[str, Any]) -> str:
             parts.extend(str(n) for n in notes)
         else:
             parts.append(str(notes))
+    evidence = task.get("evidence")
+    if evidence:
+        if isinstance(evidence, list):
+            parts.extend(str(e) for e in evidence)
+        else:
+            parts.append(str(evidence))
     return " ".join(parts).lower()
 
 
@@ -809,8 +839,10 @@ def _parse_dep_option(dep_str: str) -> dict[str, str]:
 @click.option("--dep", "deps", multiple=True, help="Dependency: id:type (e.g. TSK-0042:blocks, TSK-0017:relates)")
 @click.option("--related", "-r", help="Related task ID (shorthand for --dep id:relates)")
 @click.option("--notes", "-n", help="Freeform notes")
+@click.option("--evidence", "-e", help="Verification evidence / proof")
 def add(title: str, tags: tuple[str, ...], priority: str | None, source: str,
-        deps: tuple[str, ...], related: str | None, notes: str | None):
+        deps: tuple[str, ...], related: str | None, notes: str | None,
+        evidence: str | None):
     """Create a new task. ID is auto-generated."""
     parsed_deps = [_parse_dep_option(d) for d in deps] if deps else None
     task = add_task(
@@ -821,6 +853,7 @@ def add(title: str, tags: tuple[str, ...], priority: str | None, source: str,
         deps=parsed_deps,
         related=related,
         notes=notes,
+        evidence=evidence,
     )
     click.echo(f"Created {task['id']}: {title}")
 
@@ -963,6 +996,15 @@ def show(task_id: str):
             click.echo("  notes:")
             for i, note in enumerate(notes_list, 1):
                 click.echo(f"    {i}. {note}")
+    evidence_val = task.get("evidence")
+    if evidence_val:
+        evidence_list = _normalize_evidence(evidence_val)
+        if len(evidence_list) == 1:
+            click.echo(f"  evidence: {evidence_list[0]}")
+        else:
+            click.echo("  evidence:")
+            for i, item in enumerate(evidence_list, 1):
+                click.echo(f"    {i}. {item}")
     click.echo("")
 
 
@@ -977,11 +1019,14 @@ def show(task_id: str):
 @click.option("--related", "-r", help="Set related task ID (shorthand for --dep id:relates)")
 @click.option("--notes", "-n", help="Append a note (use --replace-notes to overwrite)")
 @click.option("--replace-notes", is_flag=True, help="Replace notes instead of appending")
+@click.option("--evidence", "-e", help="Append evidence (use --replace-evidence to overwrite)")
+@click.option("--replace-evidence", is_flag=True, help="Replace evidence instead of appending")
 @click.option("--closed", "-c", is_flag=True, help="Close the task (move to closed.yaml)")
 def update(task_id: str, status: str | None, tags: tuple[str, ...], priority: str | None,
            deps: tuple[str, ...], related: str | None, notes: str | None,
-           replace_notes: bool, closed: bool):
-    """Update fields on a task. Tags and deps are appended to existing."""
+           replace_notes: bool, evidence: str | None,
+           replace_evidence: bool, closed: bool):
+    """Update fields on a task. Tags, notes, evidence, and deps are appended to existing."""
     parsed_deps = [_parse_dep_option(d) for d in deps] if deps else None
     try:
         task = update_task(
@@ -993,6 +1038,8 @@ def update(task_id: str, status: str | None, tags: tuple[str, ...], priority: st
             related=related,
             notes=notes,
             replace_notes=replace_notes,
+            evidence=evidence,
+            replace_evidence=replace_evidence,
             closed=closed if closed else None,
         )
         click.echo(f"Updated {task['id']}: {task['title']}")
@@ -1009,14 +1056,15 @@ def update(task_id: str, status: str | None, tags: tuple[str, ...], priority: st
 @main.command()
 @click.argument("task_id")
 @click.option("--note", "-n", help="Closing note to append")
-def close(task_id: str, note: str | None):
+@click.option("--evidence", "-e", help="Closing evidence to append")
+def close(task_id: str, note: str | None, evidence: str | None):
     """Close a task. Moves it to closed.yaml, preserves its status.
 
     The task's status is NOT changed — only the 'closed' flag is set.
     Use 'tasks update --status <name> --closed' to set status and close at once.
     """
     try:
-        task = close_task(task_id, note=note)
+        task = close_task(task_id, note=note, evidence=evidence)
         click.echo(f"Closed {task['id']}: {task['title']} (status: {task.get('status', '?')})")
     except FileNotFoundError as e:
         click.echo(str(e), err=True)
@@ -1249,7 +1297,7 @@ def inbox():
 
 @main.command()
 @click.argument("text")
-@click.option("--in", "search_field", help="Scope search to a specific field (title, notes, id, status, priority, tags, source)")
+@click.option("--in", "search_field", help="Scope search to a specific field (title, notes, evidence, id, status, priority, tags, source)")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 def search(text: str, search_field: str | None, json_output: bool):
     """Full-text search across ALL tasks (active + closed).
@@ -1261,6 +1309,7 @@ def search(text: str, search_field: str | None, json_output: bool):
       tasks search "dark mode"
       tasks search login --in title
       tasks search "auth" --in notes
+      tasks search "verify" --in evidence
     """
     try:
         _, tasks = load_tasks_yaml()

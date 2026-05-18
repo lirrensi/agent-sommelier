@@ -440,14 +440,14 @@ tasks/
 └── closed.yaml   # Append-only closed archive
 ```
 
-The task system is static and file-based. `tasks.yaml` is the active source of truth, `closed.yaml` is the archive, and the inbox is deliberately free-form intake. Statuses, priorities, dependencies, and notes are all persisted in YAML so the repo can carry work across sessions.
+The task system is static and file-based. `tasks.yaml` is the active source of truth, `closed.yaml` is the archive, and the inbox is deliberately free-form intake. Statuses, priorities, dependencies, notes, and evidence are all persisted in YAML so the repo can carry work across sessions.
 
 ### Behavior Notes
 
 - `tasks next` and `tasks ready` are queue views over `todo` work
 - typed deps include `blocks`, `parent`, `child`, `discovered`, and `relates`
 - `blocks` drives readiness and blocked-state reporting
-- `tasks update` can change status, tags, priority, deps, notes, and closure in one pass
+- `tasks update` can change status, tags, priority, deps, notes, evidence, and closure in one pass
 - `tasks history` and `tasks search` make the archive useful, not just hidden
 
 ---

@@ -418,6 +418,8 @@ Static, file-backed task tracking for project work. Lives in `tasks/` with no da
 
 **Use it for:** capturing work, tracking dependencies, finding the next unblocked task, and keeping the archive of completed work visible.
 
+Tasks can also carry `notes` and `evidence` as appendable string lists; `evidence` is the quick verification trail for later re-checks.
+
 ---
 
 ## Skill: task-system — How to Use Tasks Well

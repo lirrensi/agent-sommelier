@@ -184,7 +184,8 @@ tasks status                        # Overview: in-progress, blockers, etc.
 
 # Work through
 tasks update TSK-0042 --status in-progress --notes "Found root cause"
-tasks close TSK-0042 --note "Deployed to staging"
+tasks update TSK-0042 --evidence "file: src/agent_sommelier/tasks.py"
+tasks close TSK-0042 --note "Deployed to staging" --evidence "docs/release-notes.md"
 
 # Search
 tasks search login                  # Full-text across all tasks

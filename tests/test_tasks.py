@@ -31,6 +31,7 @@ from agent_sommelier.tasks import (
     _collect_all_tags,
     _find_task_by_id,
     _format_id,
+    _task_text,
     _priority_sort_key,
     _resolve_related,
     _strip_none_fields,
@@ -45,6 +46,7 @@ from agent_sommelier.tasks import (
     next_counter_and_id,
     save_closed_yaml,
     save_tasks_yaml,
+    search_tasks,
     update_task,
 )
 
@@ -130,7 +132,7 @@ class TestFileIO:
     def test_save_and_load_roundtrip(self, initted: Path) -> None:
         """YAML round-trip: save then load returns identical data."""
         meta = {"counter": 5}
-        tasks = [{"id": "TSK-0001", "title": "test", "status": "todo"}]
+        tasks = [{"id": "TSK-0001", "title": "test", "status": "todo", "evidence": ["file: src/example.py"]}]
         save_tasks_yaml(meta, tasks)
         loaded_meta, loaded_tasks = load_tasks_yaml()
         assert loaded_meta == meta
@@ -140,11 +142,12 @@ class TestFileIO:
         """save_tasks_yaml removes dict entries whose value is None."""
         meta = {"counter": 1}
         tasks = [
-            {"id": "TSK-0001", "title": "test", "status": "todo", "priority": None}
+            {"id": "TSK-0001", "title": "test", "status": "todo", "priority": None, "evidence": None}
         ]
         save_tasks_yaml(meta, tasks)
         _, loaded = load_tasks_yaml()
         assert "priority" not in loaded[0]
+        assert "evidence" not in loaded[0]
 
     def test_load_closed_returns_empty_for_missing_file(self, tmp_cwd: Path) -> None:
         """load_closed_yaml returns [] when closed.yaml does not exist."""
@@ -237,6 +240,7 @@ class TestAddTask:
             source="jira",
             deps=[{"id": "TSK-0000", "type": "blocks"}],
             notes="Some notes",
+            evidence="Proof here",
         )
         _assert_task_fields(
             task,
@@ -246,6 +250,7 @@ class TestAddTask:
             priority=1,
             source="jira",
             notes=["Some notes"],
+            evidence=["Proof here"],
         )
         assert task["tags"] == ["bug", "ui"]
         assert task["deps"] == [{"id": "TSK-0000", "type": "blocks"}]
@@ -329,6 +334,16 @@ class TestUpdateTask:
         updated = update_task("TSK-0001", notes="replaced")
         assert updated["notes"] == ["original", "replaced"]
 
+    def test_update_evidence_appends(self, initted: Path) -> None:
+        add_task("Test", evidence="initial proof")
+        updated = update_task("TSK-0001", evidence="later proof")
+        assert updated["evidence"] == ["initial proof", "later proof"]
+
+    def test_update_evidence_replaces(self, initted: Path) -> None:
+        add_task("Test", evidence="initial proof")
+        updated = update_task("TSK-0001", evidence="fresh proof", replace_evidence=True)
+        assert updated["evidence"] == ["fresh proof"]
+
     def test_update_not_found(self, initted: Path) -> None:
         with pytest.raises(ValueError, match="Task not found: TSK-9999"):
             update_task("TSK-9999")
@@ -400,6 +415,11 @@ class TestCloseTask:
         add_task("No notes")
         closed = close_task("TSK-0001", note="only this")
         assert closed["notes"] == ["only this"]
+
+    def test_close_with_evidence(self, initted: Path) -> None:
+        add_task("No evidence")
+        closed = close_task("TSK-0001", evidence="file: src/agent_sommelier/tasks.py")
+        assert closed["evidence"] == ["file: src/agent_sommelier/tasks.py"]
 
     def test_close_preserves_other_tasks(self, initted: Path) -> None:
         add_task("Keep me")
@@ -574,6 +594,15 @@ class TestHelpers:
         items = list(counts.items())
         assert items[0][0] == "common"  # highest count first
 
+    def test_task_text_includes_evidence(self) -> None:
+        task = {"id": "TSK-0001", "title": "Test", "evidence": ["Email sent to finance@example.com"]}
+        assert "finance@example.com" in _task_text(task)
+
+    def test_search_matches_evidence(self) -> None:
+        tasks = [{"id": "TSK-0001", "title": "Test", "evidence": ["Evidence trail"]}]
+        result = search_tasks(tasks, "trail")
+        assert result == tasks
+
 
 # ===========================================================================
 # CLI LAYER TESTS  (via Click CliRunner)
@@ -616,6 +645,7 @@ class TestCliAdd:
             "--source", "jira",
             "--dep", "TSK-0000:blocks",
             "--notes", "Important",
+            "--evidence", "Proof",
         ])
         assert result.exit_code == 0
         assert "Created TSK-0001: Full task" in result.output
@@ -624,6 +654,7 @@ class TestCliAdd:
         assert tasks[0]["tags"] == ["bug", "ui"]
         assert tasks[0]["source"] == "jira"
         assert tasks[0]["deps"] == [{"id": "TSK-0000", "type": "blocks"}]
+        assert tasks[0]["evidence"] == ["Proof"]
 
     def test_add_auto_increments(self, initted: Path, runner: CliRunner) -> None:
         runner.invoke(main, ["add", "First"])
@@ -720,13 +751,14 @@ class TestCliShow:
     """tasks show <ID>"""
 
     def test_show_task(self, initted: Path, runner: CliRunner) -> None:
-        runner.invoke(main, ["add", "Show me", "--priority", "urgent", "--notes", "detail"])
+        runner.invoke(main, ["add", "Show me", "--priority", "urgent", "--notes", "detail", "--evidence", "file: src/agent_sommelier/tasks.py"])
         result = runner.invoke(main, ["show", "TSK-0001"])
         assert result.exit_code == 0
         assert "TSK-0001" in result.output
         assert "Show me" in result.output
         assert "p0" in result.output
         assert "detail" in result.output
+        assert "evidence" in result.output
 
     def test_show_not_found(self, initted: Path, runner: CliRunner) -> None:
         result = runner.invoke(main, ["show", "TSK-9999"])
@@ -808,6 +840,13 @@ class TestCliUpdate:
         _, tasks = load_tasks_yaml()
         assert tasks[0]["priority"] == 0
 
+    def test_update_evidence(self, initted: Path, runner: CliRunner) -> None:
+        runner.invoke(main, ["add", "Test task"])
+        result = runner.invoke(main, ["update", "TSK-0001", "--evidence", "proof"])
+        assert result.exit_code == 0
+        _, tasks = load_tasks_yaml()
+        assert tasks[0]["evidence"] == ["proof"]
+
     def test_update_not_found(self, initted: Path, runner: CliRunner) -> None:
         result = runner.invoke(main, ["update", "TSK-9999"])
         assert result.exit_code == 1
@@ -844,10 +883,11 @@ class TestCliClose:
 
     def test_close_with_note(self, initted: Path, runner: CliRunner) -> None:
         runner.invoke(main, ["add", "With notes", "--notes", "initial"])
-        runner.invoke(main, ["close", "TSK-0001", "--note", "done note"])
+        runner.invoke(main, ["close", "TSK-0001", "--note", "done note", "--evidence", "file: docs/result.md"])
         closed_list = load_closed_yaml()
         assert "initial" in closed_list[0]["notes"]
         assert "done note" in closed_list[0]["notes"]
+        assert closed_list[0]["evidence"] == ["file: docs/result.md"]
 
     def test_close_already_closed(self, initted: Path, runner: CliRunner) -> None:
         runner.invoke(main, ["add", "Already done"])

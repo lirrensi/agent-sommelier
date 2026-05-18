@@ -177,6 +177,7 @@ Create a new task. ID is auto-generated.
 tasks add "Refactor auth middleware"
 tasks add "Fix login bug" --tag bug --tag urgent --priority p0 --source audit
 tasks add "Write tests" --dep TSK-0003:blocks --notes "Must cover edge cases"
+tasks add "Proof trail" --evidence "file: src/agent_sommelier/tasks.py"
 tasks add "Blocked by API" --dep TSK-0002:blocks --priority high
 tasks add "Related docs" --related TSK-0005
 ```
@@ -190,11 +191,13 @@ tasks add "Related docs" --related TSK-0005
 | `--dep` | — | Dependency in `id:type` format (e.g. `TSK-0042:blocks`). Types: `blocks`, `parent`, `child`, `discovered`, `relates`. Repeatable. |
 | `--related` | `-r` | Related task ID (shorthand for `--dep id:relates`) |
 | `--notes` | `-n` | Freeform notes (stored as array — see below) |
+| `--evidence` | `-e` | Verification evidence / proof (stored as array — see below) |
 
 **Notes:**
 - Tags are normalized to lowercase, whitespace becomes hyphens
 - New tasks are prepended (newest at top)
 - Default source is `agent` if not specified
+- Use `evidence` for quick verification breadcrumbs, final proof, or later re-checking
 
 **Tagging strategy — think multi-dimensional:**
 
@@ -272,6 +275,7 @@ tasks show TSK-0001
 - Looks in both active and closed lists
 - Dependencies show their type badge, current status, and title
 - Stale dep references show `(not found)`
+- Notes and evidence are shown separately as appendable lists
 
 ---
 
@@ -298,6 +302,7 @@ tasks update TSK-0001 --status cancelled --closed
 # Modify other fields
 tasks update TSK-0001 --priority p0 --tag needs-review
 tasks update TSK-0001 --notes "Revised approach: use OAuth2"
+tasks update TSK-0001 --evidence "file: src/auth/session.py"
 tasks update TSK-0001 --dep TSK-0005:blocks     # append a blocking dependency
 tasks update TSK-0001 --related TSK-0003         # shorthand for --dep id:relates
 ```
@@ -312,6 +317,8 @@ tasks update TSK-0001 --related TSK-0003         # shorthand for --dep id:relate
 | `--related` | `-r` | Set related task ID (shorthand for `--dep id:relates`) |
 | `--notes` | `-n` | **Append** a note to the existing notes array |
 | `--replace-notes` | — | **Replace** all notes (use sparingly) |
+| `--evidence` | `-e` | **Append** evidence to the existing evidence array |
+| `--replace-evidence` | — | **Replace** all evidence (use sparingly) |
 | `--closed` | `-c` | Close the task (move to `closed.yaml`) — can be combined with `--status` |
 
 > **Tip:** Status is the most fluid field in the system. Change it freely as the task moves through your workflow. There is no pipeline — any status to any status is allowed.
@@ -331,6 +338,21 @@ tasks show TSK-0001                                       # shows all entries
 - This turns `notes` into a **coordination log** — a running history of everything that happened on the task
 - Backwards compatibility: existing string-style notes are automatically converted to a single-element array on the next update
 
+#### Evidence as an appendable array
+
+The `evidence` field is also an **array of strings**, not a single text block. Every `--evidence` update appends a new entry:
+
+```bash
+tasks update TSK-0001 --evidence "file: src/agent_sommelier/tasks.py"   # appends entry 1
+tasks update TSK-0001 --evidence "email: sent to finance@example.com"    # appends entry 2
+tasks show TSK-0001                                                      # shows all entries
+```
+
+- Use `--evidence` to **append** proof, verification clues, or re-check breadcrumbs
+- Use `--replace-evidence` only when you need to overwrite the entire array (rare)
+- This turns `evidence` into a **verification log** — a running history of what proves the task is real, blocked, or done
+- Backwards compatibility: existing string-style evidence is automatically converted to a single-element array on the next update
+
 ---
 
 ### `tasks close <TSK-NNNN>`
@@ -340,10 +362,12 @@ Close a task. Moves it from `tasks.yaml` to `closed.yaml`.
 ```bash
 tasks close TSK-0001
 tasks close TSK-0001 --note "All tests passing, deployed to staging"
+tasks close TSK-0001 --evidence "file: docs/release-notes.md"
 ```
 
 - Sets `closed: true`, adds `closed_at` timestamp — does NOT change `status`
 - Appends optional `--note` to the notes array (same as `tasks update --notes`)
+- Appends optional `--evidence` to the evidence array (same as `tasks update --evidence`)
 - Task is removed from `tasks.yaml` and appended to `closed.yaml`
 - **Error if already closed**: "Task already closed: TSK-NNNN"
 - **Error if not found**: "Task not found: TSK-NNNN"
@@ -481,7 +505,7 @@ tasks <command> --help         # Help for a specific command
 
 ### `tasks search <text>`
 
-Full-text search across **all tasks** — both active and closed. Case-insensitive, searches titles, notes, tags, status, priority, source, and IDs.
+Full-text search across **all tasks** — both active and closed. Case-insensitive, searches titles, notes, evidence, tags, status, priority, source, and IDs.
 
 ```bash
 tasks search login                      # any mention of "login"
@@ -489,13 +513,14 @@ tasks search "dark mode"                # multi-word search
 tasks search bug --json                 # JSON output
 tasks search login --in title           # only in title field
 tasks search "auth" --in notes          # only in notes field
+tasks search "proof" --in evidence      # only in evidence field
 tasks search "TSK-0001" --in deps       # search dependency IDs
 ```
 
 **Options:**
 | Flag | Description |
 |------|-------------|
-| `--in` | Scope search to a specific field: `title`, `notes`, `id`, `status`, `priority`, `tags`, `source`, `deps` |
+| `--in` | Scope search to a specific field: `title`, `notes`, `evidence`, `id`, `status`, `priority`, `tags`, `source`, `deps` |
 | `--json` | Output raw JSON instead of a Rich table |
 
 > For structured filters use `tasks list` or `tasks history` with `--tag`, `--tag-any`, `--priority`, `--status`, `--related`.
