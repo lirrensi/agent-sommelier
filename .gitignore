@@ -43,5 +43,10 @@ Thumbs.db
 
 private/
 tasks/
+!src/agent_sommelier/tasks/
+!src/agent_sommelier/tasks/__init__.py
+!src/agent_sommelier/tasks/cli.py
+!src/agent_sommelier/tasks/core.py
+!src/agent_sommelier/tasks/render.py
 .opencode/
 memory

@@ -177,7 +177,7 @@ Create a new task. ID is auto-generated.
 tasks add "Refactor auth middleware"
 tasks add "Fix login bug" --tag bug --tag urgent --priority p0 --source audit
 tasks add "Write tests" --dep TSK-0003:blocks --notes "Must cover edge cases"
-tasks add "Proof trail" --evidence "file: src/agent_sommelier/tasks.py"
+tasks add "Proof trail" --evidence "file: src/agent_sommelier/tasks/core.py"
 tasks add "Blocked by API" --dep TSK-0002:blocks --priority high
 tasks add "Related docs" --related TSK-0005
 ```
@@ -343,7 +343,7 @@ tasks show TSK-0001                                       # shows all entries
 The `evidence` field is also an **array of strings**, not a single text block. Every `--evidence` update appends a new entry:
 
 ```bash
-tasks update TSK-0001 --evidence "file: src/agent_sommelier/tasks.py"   # appends entry 1
+tasks update TSK-0001 --evidence "file: src/agent_sommelier/tasks/core.py"   # appends entry 1
 tasks update TSK-0001 --evidence "email: sent to finance@example.com"    # appends entry 2
 tasks show TSK-0001                                                      # shows all entries
 ```

@@ -181,10 +181,11 @@ tasks next                          # Top priority
 tasks ready                         # All unblocked, sorted
 tasks blocked                       # What's stuck and why
 tasks status                        # Overview: in-progress, blockers, etc.
+tasks overview                      # Read-only, visually separated active-task overview
 
 # Work through
 tasks update TSK-0042 --status in-progress --notes "Found root cause"
-tasks update TSK-0042 --evidence "file: src/agent_sommelier/tasks.py"
+tasks update TSK-0042 --evidence "file: src/agent_sommelier/tasks/core.py"
 tasks close TSK-0042 --note "Deployed to staging" --evidence "docs/release-notes.md"
 
 # Search
@@ -196,6 +197,8 @@ tasks history --limit 10            # Recently completed
 **12 statuses** — `todo` → `in-progress` → `done` (with `blocked`, `postponed`, `cancelled`, `review`, `waiting`, `parked`, `deferred`, `backlog`, `abandoned` in between). Move freely — no transition restrictions.
 
 **Dependencies with teeth** — `blocks`, `parent`, `child`, `discovered`, `relates`. The `blocks` type feeds the ready queue automatically.
+
+**Read-only overview when you need a scan pass** — `tasks overview` gives you a vertically separated, Rich-formatted summary of active work without changing task state.
 
 **Tagging that scales** — Multi-dimensional: `--tag type:bug`, `--tag area:auth`, `--tag urgency:security`.
 
@@ -271,7 +274,11 @@ agent-sommelier/
 │   ├── bg.py                 # Background job manager
 │   ├── crony.py              # Cron job scheduler
 │   ├── screenshot.py         # Screen capture
-│   ├── tasks.py              # In-repo task management
+│   ├── tasks/                # In-repo task management package
+│   │   ├── __init__.py
+│   │   ├── cli.py
+│   │   ├── core.py
+│   │   └── render.py
 │   └── skill_store.py        # On-demand skill registry CLI
 ├── skills/                   # Agent skill definitions (14 skills)
 ├── docs/                     # Product & architecture documentation

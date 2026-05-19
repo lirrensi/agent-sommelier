@@ -14,7 +14,11 @@ agent-sommelier/
 │   ├── bg.py                # Background job manager
 │   ├── crony.py             # Cron job scheduler
 │   ├── screenshot.py        # Screen capture
-│   └── tasks.py             # In-repo task management
+│   └── tasks/               # In-repo task management package
+│       ├── __init__.py
+│       ├── cli.py
+│       ├── core.py
+│       └── render.py
 ├── skills/                  # Agent skills for self-install
 │   ├── bg-jobs/SKILL.md
 │   ├── crony/SKILL.md
@@ -408,13 +412,18 @@ JSON list output SHOULD include the same computed `next_run` field so scripts an
 
 ## Component: tasks
 
-### File
-`src/agent_sommelier/tasks.py`
+### Files
+`src/agent_sommelier/tasks/`
 
 ### Entry Point
 ```python
 tasks = "agent_sommelier.tasks:main"
 ```
+
+### Module Split
+- `core.py` — YAML storage, migrations, CRUD, search, dependency math
+- `render.py` — Rich console/table helpers, priority formatting, and overview section rendering
+- `cli.py` — Click group and command wiring
 
 ### Commands
 - `tasks init` — Bootstrap or repair the task files
@@ -424,6 +433,7 @@ tasks = "agent_sommelier.tasks:main"
 - `tasks ready` — Show ready work only
 - `tasks blocked` — Show blocked work and blockers
 - `tasks status` — Session overview for active work
+- `tasks overview` — Read-only vertical overview of active work
 - `tasks show` — Render one task in full
 - `tasks update` — Edit task fields and status
 - `tasks close` — Archive a task
@@ -447,6 +457,7 @@ The task system is static and file-based. `tasks.yaml` is the active source of t
 - `tasks next` and `tasks ready` are queue views over `todo` work
 - typed deps include `blocks`, `parent`, `child`, `discovered`, and `relates`
 - `blocks` drives readiness and blocked-state reporting
+- `tasks overview` uses overview-specific Rich section rendering for a vertical dashboard-like view without adding interactivity
 - `tasks update` can change status, tags, priority, deps, notes, evidence, and closure in one pass
 - `tasks history` and `tasks search` make the archive useful, not just hidden
 

@@ -1048,6 +1048,81 @@ class TestCliStatus:
         assert "Tasks file not found" in result.output
 
 
+class TestCliOverview:
+    """tasks overview"""
+
+    def test_overview_empty_initialized_repo(self, initted: Path, runner: CliRunner) -> None:
+        result = runner.invoke(main, ["overview"])
+        assert result.exit_code == 0
+        assert "NOW" in result.output
+        assert "READY" in result.output
+        assert "WAITING" in result.output
+        assert "PARKED" in result.output
+
+    def test_overview_now_includes_in_progress(self, initted: Path, runner: CliRunner) -> None:
+        runner.invoke(main, ["add", "Ship feature"])
+        runner.invoke(main, ["update", "TSK-0001", "--status", "in-progress"])
+        result = runner.invoke(main, ["overview"])
+        assert result.exit_code == 0
+        assert "Ship feature" in result.output
+
+    def test_overview_ready_includes_unblocked_todo(self, initted: Path, runner: CliRunner) -> None:
+        runner.invoke(main, ["add", "Ready task", "--priority", "high"])
+        result = runner.invoke(main, ["overview"])
+        assert result.exit_code == 0
+        assert "READY" in result.output
+        assert "Ready task" in result.output
+
+    def test_overview_waiting_includes_blocked_and_waiting_tasks(self, initted: Path, runner: CliRunner) -> None:
+        runner.invoke(main, ["add", "Blocker"])
+        runner.invoke(main, ["add", "Blocked todo", "--dep", "TSK-0001:blocks"])
+        runner.invoke(main, ["add", "Waiting task"])
+        runner.invoke(main, ["update", "TSK-0003", "--status", "waiting"])
+        result = runner.invoke(main, ["overview"])
+        assert result.exit_code == 0
+        assert "WAITING" in result.output
+        assert "Blocked todo" in result.output
+        assert "Waiting task" in result.output
+
+    def test_overview_parked_includes_postponed_and_parked(self, initted: Path, runner: CliRunner) -> None:
+        runner.invoke(main, ["add", "Later maybe"])
+        runner.invoke(main, ["update", "TSK-0001", "--status", "postponed"])
+        result = runner.invoke(main, ["overview"])
+        assert result.exit_code == 0
+        assert "PARKED" in result.output
+        assert "Later maybe" in result.output
+
+    def test_overview_json_returns_expected_sections(self, initted: Path, runner: CliRunner) -> None:
+        runner.invoke(main, ["add", "JSON task"])
+        result = runner.invoke(main, ["overview", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "counts" in data
+        assert "now" in data
+        assert "ready" in data
+        assert "waiting" in data
+        assert "parked" in data
+
+    def test_overview_file_not_found(self, tmp_cwd: Path, runner: CliRunner) -> None:
+        result = runner.invoke(main, ["overview"])
+        assert result.exit_code == 1
+        assert "Tasks file not found" in result.output
+
+    def test_overview_places_task_in_only_one_section(self, initted: Path, runner: CliRunner) -> None:
+        runner.invoke(main, ["add", "Active blocker"])
+        runner.invoke(main, ["add", "Only waiting", "--dep", "TSK-0001:blocks"])
+        result = runner.invoke(main, ["overview", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        section_hits = sum(
+            1
+            for section in ("now", "ready", "waiting", "parked", "other")
+            if any(task["id"] == "TSK-0002" for task in data[section])
+        )
+        assert section_hits == 1
+        assert any(task["id"] == "TSK-0002" for task in data["waiting"])
+
+
 class TestCliHistory:
     """tasks history"""
 
@@ -1736,6 +1811,7 @@ class TestEdgeCases:
             ["close", "TSK-0001"],
             ["next"],
             ["status"],
+            ["overview"],
             ["deps", "TSK-0001"],
             ["ready"],
             ["blocked"],
