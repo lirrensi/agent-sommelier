@@ -1,201 +1,175 @@
-# Dream Mode Reference
+# Dream Mode
 
-Use this when the agent is asked to **"dream"**, do a **background memory pass**, or otherwise focus on **retrieving and distilling prior context instead of mainly reacting to the current conversation**.
+## My Vision
 
-This is **not limited to cron**. It also fits:
-- background jobs
-- nightly maintenance loops
-- manual review passes
-- end-of-day consolidation
-- long-running app sessions that periodically distill context
+Dream mode is a **retrieval-first memory pass**.
 
-## What Dream Mode Is
+It is **not** a new memory type.
+It is **not** a special template.
 
-Dream mode is **not** a separate memory type and **not** a special note template.
+It is just the mode you use when the goal is to:
+- review prior sessions or artifacts
+- extract what matters
+- update memory cleanly
+- preserve history without duplicating canon
 
-It is a **shortcut reference / operating mode** for using the normal memory-bank system with a different emphasis:
+Use normal memory-bank rules and normal memory templates.
 
-- less focus on the immediate turn
-- more focus on retrieval from prior records
-- more focus on consolidation across many prior sessions or artifacts
-- same memory types as always: `episodic`, `semantic`, `procedural`
-- same normal templates as always
+---
 
-If the user says things like:
-- "dream about this"
-- "run a background memory pass"
-- "consolidate what we've learned"
-- "review prior sessions and update memory"
+## Start Here
 
-...then **read this file first**, and then proceed with the ordinary memory-bank workflow.
+Before doing anything else, figure out 3 things:
 
-## Goal
+1. **Queue** — what counts as unprocessed?
+2. **Access** — how do you read prior sessions/artifacts in this environment?
+3. **Boundary** — what exact time window, cursor, or scope are you reviewing now?
 
-Dream mode is a **maintenance and enrichment pass** over prior material.
+If these are unclear, resolve them first.
 
-It should:
-- review what happened
-- extract durable truths
-- improve reusable procedures
-- preserve meaningful history
-- avoid creating duplicate semantic/procedural files
-- leave a trace of what it processed
+---
 
-## One-line rule
+## What To Focus On
 
-**Episodic records what happened during the pass. Semantic and procedural are updated like wiki pages.**
+Prioritize:
+- repeated patterns
+- durable preferences
+- stable constraints
+- major state changes
+- decisions with consequences
+- workflow lessons
+- corrections to current understanding
+- unresolved contradictions
 
-## Inputs Dream Mode May Use
+Deprioritize:
+- one-off noise
+- tiny details with no future value
+- facts that only mattered in the original moment
 
-Use whatever tools are available in the runtime, but prefer this order of operations:
+---
 
-1. **Read the memory map first**
-   - `./memory/INDEX.md`
-2. **Read relevant existing memories**
-   - especially `semantic/` and `procedural/` before creating anything new
-3. **Read source material for consolidation**
-   - previous session logs
-   - notes
-   - transcripts
-   - task records
-   - summaries
-   - app-specific history
-4. **Read prior dream/maintenance records**
-   - to avoid reprocessing the same material blindly
+## Sort Memory Like This
 
-## Recommended Procedure
+### Episodic
+Use for **what happened**.
 
-### 1) Orient
+Good for:
+- events
+- discoveries in context
+- failed attempts
+- milestones
+- session-specific developments
 
-- Read `./memory/INDEX.md`
-- Scan existing semantic/procedural files related to the topic
-- Check whether a maintenance log already exists for today
+### Semantic
+Use for **what is true now**.
 
-### 2) Determine the source window
+Think: **semantic stores what is true**.
 
-Define what this dream pass is reviewing, for example:
-- "since last successful dream run"
-- "today's sessions"
-- "the last 24 hours"
-- "unprocessed transcripts in folder X"
+Upgrade something to semantic when it stops being just part of the story and starts affecting future reasoning.
 
-If possible, record the exact scope.
-
-### 3) Track what is being processed
-
-Keep a small record of:
-- inputs reviewed
-- time window covered
-- items fully processed
-- items skipped or deferred
-- confidence or open questions
-
-Recommended optional location:
-- `./memory/maintenance/`
-
-Suggested files:
-- `./memory/maintenance/dream_runs/YYYY_MM_DD.md`
-- `./memory/maintenance/processing_status.md`
-
-If a machine-readable format helps the host app more, a parallel `.jsonl` or `.json` log is also fine.
-
-This tracking record is optional support material, **not a new memory type**.
-
-### 4) Extract memory by type
-
-For each important piece of information, ask:
-
-- **What happened?** -> create or update `episodic`
-- **What is now true?** -> update existing `semantic`, or create one if the topic is genuinely new
-- **How should this be done next time?** -> update existing `procedural`, or create one if genuinely new
-
-### 5) Update episodic carefully
-
-Use episodic for:
-- what the reviewed sessions contained
-- important incidents, discoveries, decisions, failures, milestones
-- the fact that a dream pass happened, if the pass itself is worth preserving
-
-Guidance:
-- prefer dated files
-- if multiple dream passes run on the same day, updating that day's dream-related episodic note is acceptable **when the scope is the same ongoing maintenance pass**
-- create a new episodic file when the run is materially separate in purpose, source window, or significance
-
-### 6) Update semantic aggressively but cleanly
-
-Use semantic for:
-- stable preferences
-- durable facts
+Good for:
+- durable preferences
+- stable facts
 - current state
-- constraints
-- profiles
+- standing constraints
+- corrections to prior understanding
 
-Guidance:
-- search for an existing subject file first
-- update the existing file if it already represents the topic
-- create a new file only when the topic does not yet have a stable home
-- do not create "one semantic file per session"
+### Procedural
+Use for **how to do it next time**.
 
-### 7) Update procedural when patterns repeat
+Think: **procedural stores what works**.
 
-Use procedural for:
-- repeatable workflows
+This includes both **workflow execution** and **human adaptation**.
+
+Good for:
+- workflows
 - checklists
-- behavior rules
-- response patterns
-- maintenance routines
+- behavior guidance
+- reusable response patterns
+- user-specific adaptation rules
+- calming, escalation, or timing strategies that reliably work
+- lessons that should guide future action
 
-Guidance:
-- refine the canonical how-to/playbook
-- add lessons learned from repeated sessions
-- avoid creating a new procedural file for every tiny tweak
+Example:
+- `semantic`: the user dislikes meetings when hungry
+- `procedural`: avoid scheduling important meetings when they are hungry
 
-### 8) Mark uncertainty honestly
+---
 
-If something is tentative:
-- use `confidence: tentative` or `likely`
-- preserve the source in `source:`
-- avoid overstating a pattern from one weak example
+## Update Rules
 
-### 9) Rebuild the map
+- `episodic` can grow by new dated entries
+- `semantic` should usually update an existing subject file
+- `procedural` should usually update an existing how-to/playbook
 
-After updates:
+Rule of thumb:
+- **event** -> episodic
+- **durable truth** -> semantic
+- **repeatable method** -> procedural
 
-```bash
-python skills/memory-bank/scripts/index.py
-```
+Do **not** create a new semantic/procedural file just because a new session happened.
+Do **not** overfit one weak incident into a lasting fact or rule too quickly.
 
-## What To Create During Dream Mode
+---
 
-Dream mode does **not** introduce new file types.
+## Ambiguity Rule
 
-Create or update only the normal things memory-bank already uses:
+Ask:
+- Will I want this later as a **story**, a **truth**, or a **method**?
 
-- `episodic` notes for events, reviewed windows, notable discoveries, or meaningful consolidation passes
-- `semantic` notes for durable truths and current state
-- `procedural` notes for repeatable workflows and behavior guidance
-- optional maintenance/processing records if the host environment benefits from them
+Default to **one memory type**.
+Use multiple only when retrieval truly differs.
 
-If you need structure, reuse the normal memory-bank templates and naming rules.
+---
 
-## Good Defaults
+## Conflict Rule
 
-If the runtime gives you very little structure, default to this:
+If information conflicts:
+- do not silently flatten it
+- newer knowledge usually takes precedence when credible
+- preserve uncertainty when unresolved
+- use `confidence:` or `status:` when needed
 
-1. read `INDEX.md`
-2. identify the unreviewed source window
-3. update existing semantic/procedural files first
-4. create episodic notes for notable events or the dream pass itself
-5. leave a maintenance record showing what was processed
-6. rebuild `INDEX.md`
+Rough routing:
+- conflict **as fact** -> cautious semantic update
+- conflict **as event** -> episodic
+- conflict **that changes behavior** -> procedural
 
-## Anti-Patterns
+---
 
-Avoid these little gremlins:
+## Minor vs Major
 
-- creating a fresh semantic file every run
-- creating a fresh procedural file for every minor refinement
-- overwriting meaningful historical episodic context
-- processing the same source repeatedly with no marker or ledger
-- claiming durable truth from a single weak signal
-- editing `INDEX.md` by hand instead of rebuilding it
+Keep it **episodic** when it is:
+- local to the moment
+- weakly evidenced
+- interesting but not durable
+
+Promote to **semantic** when it is:
+- durable
+- repeated
+- confirmed
+- a meaningful state change
+- a new stable preference or constraint
+
+Promote to **procedural** when it teaches:
+- a repeatable step
+- a safer method
+- a better default behavior
+- a reliable way to navigate this user's recurring situations well
+
+Simple promotion rule:
+- what happened -> `episodic`
+- what is true -> `semantic`
+- what works next time -> `procedural`
+
+---
+
+## Dream Mode Outcome
+
+At the end of a dream pass:
+- at least one meaningful memory is created or updated, or one episodic file is created/updated
+- history stays meaningful
+- semantic stays canonical
+- procedural stays reusable
+- processed scope is clear
+- duplicate memory spam is avoided

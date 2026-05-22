@@ -43,16 +43,20 @@ Use this fast decision tree when deciding what to save:
 - If the answer is **what happened?** -> save `episodic`
 - If the answer is **what is true now?** -> save or update `semantic`
 - If the answer is **how do we do this?** -> save or update `procedural`
+- Short version: **episodic = what happened, semantic = what is true, procedural = what works next time**
 - If the answer is **more than one of those, and each would be retrieved differently** -> save in multiple forms (but in most cases, one file is enough)
 
 Mini examples:
 - "We had a nasty auth incident today" -> `episodic`
 - "The client prefers weekly async updates" -> `semantic`
 - "Here is the release checklist" -> `procedural`
+- "The user dislikes meetings when hungry" -> `semantic`; "avoid scheduling important meetings when they're hungry" -> `procedural`
 - "A failed deploy taught us a safer rollout order" -> `episodic` + `procedural` (the event and the new workflow are both worth preserving)
 - "A conversation revealed a lasting user preference" -> `episodic`
 
 Most knowledge fits cleanly into one memory type. Only create multiple files when the same information genuinely needs to be retrieved in two or more fundamentally different ways.
+
+Do **not** overfit one weak moment into a lasting fact or rule too quickly.
 
 ---
 
@@ -91,22 +95,25 @@ Examples across domains:
 
 **Important:** Semantic is not just "project facts" — it is *any durable truth about the world you operate in*, including people, projects, and yourself.
 
+Think: **semantic stores what is true.**
+
 ### Procedural
 
-Use for repeatable methods, behavioral guidance, checklists, workflows, instructions, playbooks, routines, and standard ways of doing things — including how to approach situations and how to behave in the future.
+Use for repeatable methods, behavioral guidance, checklists, workflows, instructions, playbooks, routines, and standard ways of doing things — including how to approach situations, how to adapt to a person, and how to behave in the future.
 
 This answers: **how do we do this?** and **how should I behave?**
 
-Think of procedural memory as a **wiki page for behavior and workflows**. Keep the canonical checklist or playbook in one stable file and revise it as the process improves, instead of creating a fresh procedural note per conversation.
+Think of procedural memory as a **wiki page for behavior and workflows**. It stores not only productivity steps, but also the learned ways to navigate recurring human situations well. Keep the canonical checklist, playbook, or adaptation guide in one stable file and revise it as the process improves, instead of creating a fresh procedural note per conversation.
 
 Examples across domains:
 - *Code:* How to deploy safely, code review checklist, incident response playbook
 - *Business:* Weekly reporting workflow, client onboarding steps, negotiation prep routine
 - *Personal:* Travel packing checklist, morning routine, weekly reflection process
 - *Behavioral:* How to approach sensitive topics with this user, tone guidance for difficult conversations, when to escalate vs. handle independently
+- *Adaptive assistant:* If the user hates meetings when hungry, choose better meeting times; if the user is angry, start with calming acknowledgment before problem-solving; if a user shuts down under overload, reduce options and keep replies short
 - *Creative:* The revision checklist, how to critique a draft without crushing morale
 
-**Important:** Procedural is not just "task execution." It is *any repeatable pattern of behavior* — including how you (or the system) should act in specific contexts. If you are building a personality system, behavioral rules belong in procedural memory.
+**Important:** Procedural is not just "task execution." It is *any repeatable pattern of behavior* — including how you (or the system) should act in specific contexts, how to adapt to this user, and what response patterns tend to work. If semantic memory stores what is true, procedural memory stores what works.
 
 ### Multiple types from one interaction
 
@@ -152,6 +159,11 @@ Ask these questions:
    - Save or update `procedural`
 4. Does it truly span multiple categories in ways you'd search for differently?
    - Only then save in multiple forms. In most cases, one file is enough — don't create extra files just because the knowledge technically touches more than one category.
+
+Simple promotion rule:
+- If it matters as **what happened** -> `episodic`
+- If it changes **what is true** -> `semantic`
+- If it changes **what to do next time** -> `procedural`
 
 Examples across domains:
 - *Code:* "We debugged auth and found the cookie domain was wrong"
@@ -275,11 +287,10 @@ If you want to run memory-bank in a recurring, background, or semi-autonomous **
 
 That reference explains how to:
 - treat **dream** as a retrieval-first operating mode, not a new memory type
-- review prior sessions or source logs
-- track what was processed vs deferred
-- extract `episodic`, `semantic`, and `procedural` memories cleanly
+- decide what matters in prior material
+- sort information into `episodic`, `semantic`, and `procedural`
+- handle ambiguity, conflict, and update thresholds
 - update existing canonical files instead of duplicating them
-- handle multiple runs in the same day
 
 Use the **normal memory-bank templates and file types** during dream mode. The reference is just the shortcut path for how to operate when the task is "dream / background consolidation / review prior context".
 
@@ -493,6 +504,7 @@ When cleaning up memories:
 Distill carefully:
 - Promote repeated or clearly durable facts into `semantic` memory when you have good evidence they should be long-lived
 - Promote repeatable workflows into `procedural` memory when they are clearly meant to be reused
+- Do not turn one weak incident into a lasting semantic belief or procedural law too quickly
 - If you are not confident, preserve the original memory and avoid over-distilling
 
 If the user asks to "clean up my memories", a good default is:
@@ -522,6 +534,7 @@ Practical default:
 - If a matching `semantic` or `procedural` file already exists, **update it**
 - Only create a new `semantic` or `procedural` file when the topic is genuinely new or the existing file has become meaningfully different in scope
 - Do **not** create duplicate semantic/procedural files just because today's conversation added another fact or tweak
+- When information conflicts, newer knowledge usually takes precedence, but update gently and preserve uncertainty when needed
 
 The goal is to avoid both extremes: don't spam new files for every tiny change, but don't flatten meaningful history into one endlessly edited document either.
 
