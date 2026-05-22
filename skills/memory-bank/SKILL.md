@@ -23,6 +23,7 @@ A persistent memory system for storing knowledge that survives across conversati
 ## Core Philosophy
 
 - **Three memory types, one system**: Store experiences as `episodic`, durable facts and evolving state as `semantic`, and repeatable workflows as `procedural`.
+- **Episodic = diary. Semantic & Procedural = wiki.** `episodic` gets new dated entries. `semantic` and `procedural` are living reference pages that should usually be updated over time instead of duplicated per session.
 - **Use the shape that matches future retrieval**: Save things based on how you'll want to find them later — what happened, what is true, or how to do it.
 - **Prefer history over rewrites**: When an event or decision matters in its own right, preserve it as a dated record rather than erasing what came before.
 - **But don't spam**: Update living records when the goal is to maintain current state or current instructions.
@@ -79,6 +80,8 @@ Use for durable knowledge, evolving facts, preferences, profiles, constraints, c
 
 This answers: **what is currently true?**
 
+Think of semantic memory as a **wiki page, not a diary entry**. Prefer **one stable file per subject** that accumulates updates over time. Do **not** create a new semantic file just because a new session happened.
+
 Examples across domains:
 - *User/Client:* Communication preferences, timezone, dietary restrictions, preferred meeting times
 - *Project:* Current architecture constraints, active risks, tech stack choices
@@ -93,6 +96,8 @@ Examples across domains:
 Use for repeatable methods, behavioral guidance, checklists, workflows, instructions, playbooks, routines, and standard ways of doing things — including how to approach situations and how to behave in the future.
 
 This answers: **how do we do this?** and **how should I behave?**
+
+Think of procedural memory as a **wiki page for behavior and workflows**. Keep the canonical checklist or playbook in one stable file and revise it as the process improves, instead of creating a fresh procedural note per conversation.
 
 Examples across domains:
 - *Code:* How to deploy safely, code review checklist, incident response playbook
@@ -205,6 +210,11 @@ Examples — notice these span many domains:
 
 Multiple episodic files per day are normal and encouraged. Semantic and procedural files should usually keep stable names so they can be updated over time.
 
+Rule of thumb:
+- `episodic/` = many dated files over time
+- `semantic/` = one evolving file per topic
+- `procedural/` = one evolving file per workflow or behavior pattern
+
 ---
 
 ## Optional YAML Fields (Obsidian-Compatible)
@@ -256,6 +266,22 @@ Templates live in `skills/memory-bank/templates/`. Copy the one matching your me
 4. Run the index script (see below)
 
 > **Use only the sections that fit.** A memory for a client call looks different from a debugging session — that's fine.
+
+### Dream / background maintenance reference
+
+If you want to run memory-bank in a recurring, background, or semi-autonomous **"dream mode"** pass, see:
+
+- `skills/memory-bank/references/dream-mode.md`
+
+That reference explains how to:
+- treat **dream** as a retrieval-first operating mode, not a new memory type
+- review prior sessions or source logs
+- track what was processed vs deferred
+- extract `episodic`, `semantic`, and `procedural` memories cleanly
+- update existing canonical files instead of duplicating them
+- handle multiple runs in the same day
+
+Use the **normal memory-bank templates and file types** during dream mode. The reference is just the shortcut path for how to operate when the task is "dream / background consolidation / review prior context".
 
 ---
 
@@ -480,6 +506,8 @@ If the user asks to "clean up my memories", a good default is:
 
 ## When to Create vs Update a File
 
+**One-line rule:** `episodic` creates history; `semantic` and `procedural` maintain canonical pages.
+
 **Create a new file** when:
 - You are recording a distinct event, session, decision point, incident, or milestone
 - You are starting a new topic with no current memory for it
@@ -489,6 +517,11 @@ If the user asks to "clean up my memories", a good default is:
 - You are maintaining an ongoing semantic record of current state
 - You are improving an existing procedure or checklist
 - A stable file for this subject already exists and should remain the source of truth
+
+Practical default:
+- If a matching `semantic` or `procedural` file already exists, **update it**
+- Only create a new `semantic` or `procedural` file when the topic is genuinely new or the existing file has become meaningfully different in scope
+- Do **not** create duplicate semantic/procedural files just because today's conversation added another fact or tweak
 
 The goal is to avoid both extremes: don't spam new files for every tiny change, but don't flatten meaningful history into one endlessly edited document either.
 
