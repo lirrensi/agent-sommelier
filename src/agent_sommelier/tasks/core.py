@@ -59,6 +59,7 @@ TASKS_HEADER = """\
 #   tasks add "Title"       Create a new task
 #   tasks list              Show active tasks
 #   tasks show TSK-NNNN     Full detail of one task
+#   tasks take TSK-NNNN     Mark a task in-progress (shorthand)
 #   tasks update TSK-NNNN   Modify a task
 #   tasks close TSK-NNNN    Close a task (any status)
 #   tasks next              Highest-priority todo(s)
@@ -499,7 +500,8 @@ def next_counter_and_id() -> tuple[int, str]:
 
 
 def add_task(title: str, priority: int | str | None = None, tags: list[str] | None = None,
-             source: str | None = None, deps: list[dict[str, str]] | None = None,
+             source: str | None = None, owner: str | None = None,
+             deps: list[dict[str, str]] | None = None,
              related: str | None = None, notes: str | None = None,
              evidence: str | None = None) -> dict[str, Any]:
     meta, tasks = load_tasks_yaml()
@@ -525,6 +527,8 @@ def add_task(title: str, priority: int | str | None = None, tags: list[str] | No
         task["tags"] = [t.lower().strip().replace(" ", "-") for t in tags]
     if source:
         task["source"] = source
+    if owner:
+        task["owner"] = owner
     if deps:
         task["deps"] = deps
     elif related:
@@ -540,7 +544,8 @@ def add_task(title: str, priority: int | str | None = None, tags: list[str] | No
 
 
 def update_task(task_id: str, status: str | None = None, priority: int | str | None = None,
-                tags: list[str] | None = None, deps: list[dict[str, str]] | None = None,
+                tags: list[str] | None = None, owner: str | None = None,
+                deps: list[dict[str, str]] | None = None,
                 related: str | None = None, notes: str | None = None, replace_notes: bool = False,
                 evidence: str | None = None, replace_evidence: bool = False,
                 closed: bool | None = None) -> dict[str, Any]:
@@ -562,6 +567,11 @@ def update_task(task_id: str, status: str | None = None, priority: int | str | N
             if tag not in existing:
                 existing.append(tag)
         task["tags"] = existing
+    if owner is not None:
+        if owner:
+            task["owner"] = owner
+        else:
+            task.pop("owner", None)
     if deps:
         existing_deps = _ensure_deps_field(task)
         for dep in deps:

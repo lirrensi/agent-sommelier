@@ -434,8 +434,9 @@ tasks = "agent_sommelier.tasks:main"
 - `tasks blocked` — Show blocked work and blockers
 - `tasks status` — Session overview for active work
 - `tasks overview` — Read-only vertical overview of active work
+- `tasks take` — Shorthand to mark a task in-progress (idempotent)
 - `tasks show` — Render one task in full
-- `tasks update` — Edit task fields and status
+- `tasks update` — Edit task fields and status (supports `--owner` and `--claim` when that flag is preferred)
 - `tasks close` — Archive a task
 - `tasks history` — Browse closed tasks
 - `tasks search` — Full-text search across active + closed tasks
@@ -450,7 +451,7 @@ tasks/
 └── closed.yaml   # Append-only closed archive
 ```
 
-The task system is static and file-based. `tasks.yaml` is the active source of truth, `closed.yaml` is the archive, and the inbox is deliberately free-form intake. Statuses, priorities, dependencies, notes, and evidence are all persisted in YAML so the repo can carry work across sessions.
+The task system is static and file-based. `tasks.yaml` is the active source of truth, `closed.yaml` is the archive, and the inbox is deliberately free-form intake. Statuses, priorities, dependencies, notes, evidence, and the optional `owner` field are all persisted in YAML so the repo can carry work across sessions.
 
 ### Behavior Notes
 
@@ -458,7 +459,8 @@ The task system is static and file-based. `tasks.yaml` is the active source of t
 - typed deps include `blocks`, `parent`, `child`, `discovered`, and `relates`
 - `blocks` drives readiness and blocked-state reporting
 - `tasks overview` uses overview-specific Rich section rendering for a vertical dashboard-like view without adding interactivity
-- `tasks update` can change status, tags, priority, deps, notes, evidence, and closure in one pass
+- `tasks take` is a dedicated shorthand for `tasks update --status in-progress`; it accepts an optional `--owner` flag but otherwise performs no additional side effects
+- `tasks update` can change status, tags, priority, deps, notes, evidence, closure, and the optional `owner` field in one pass
 - `tasks history` and `tasks search` make the archive useful, not just hidden
 
 ---

@@ -78,7 +78,9 @@ Every task has a `status` field. The system accepts exactly these 12 statuses:
 Use `tasks update TSK-NNNN --status <name>` to change any task's status at any time:
 
 ```bash
-tasks update TSK-0001 --status in-progress      # start working
+tasks take TSK-0001                             # shorthand: start working (idempotent)
+tasks take TSK-0001 --owner rx                  # start working, assign owner
+tasks update TSK-0001 --status in-progress      # start working (explicit)
 tasks update TSK-0001 --status blocked           # hit a blocker
 tasks update TSK-0001 --status waiting           # waiting on someone
 tasks update TSK-0001 --status review            # needs review
@@ -176,6 +178,7 @@ Create a new task. ID is auto-generated.
 ```bash
 tasks add "Refactor auth middleware"
 tasks add "Fix login bug" --tag bug --tag urgent --priority p0 --source audit
+tasks add "Refactor auth" --owner rx --tag refactor --priority p1
 tasks add "Write tests" --dep TSK-0003:blocks --notes "Must cover edge cases"
 tasks add "Proof trail" --evidence "file: src/agent_sommelier/tasks/core.py"
 tasks add "Blocked by API" --dep TSK-0002:blocks --priority high
@@ -188,6 +191,7 @@ tasks add "Related docs" --related TSK-0005
 | `--tag` | `-t` | Tag(s) to apply (repeatable, e.g. `-t bug -t ui`) |
 | `--priority` | `-p` | Priority: `0`–`4` or name (`critical`, `urgent`, `high`, `medium`, `low`, `backlog`) |
 | `--source` | `-s` | Source: `inbox`, `audit`, `test`, `jira`, `agent`, `idea` (default: `agent`) |
+| `--owner` | — | Optional owner/assignee for the task |
 | `--dep` | — | Dependency in `id:type` format (e.g. `TSK-0042:blocks`). Types: `blocks`, `parent`, `child`, `discovered`, `relates`. Repeatable. |
 | `--related` | `-r` | Related task ID (shorthand for `--dep id:relates`) |
 | `--notes` | `-n` | Freeform notes (stored as array — see below) |
@@ -315,6 +319,7 @@ tasks update TSK-0001 --related TSK-0003         # shorthand for --dep id:relate
 | `--tag` | `-t` | **Append** tag(s) to existing tags (repeatable) — does NOT replace |
 | `--dep` | — | **Append** dependency in `id:type` format (repeatable). Types: `blocks`, `parent`, `child`, `discovered`, `relates`. |
 | `--related` | `-r` | Set related task ID (shorthand for `--dep id:relates`) |
+| `--owner` | — | Set or clear owner (empty string clears) |
 | `--notes` | `-n` | **Append** a note to the existing notes array |
 | `--replace-notes` | — | **Replace** all notes (use sparingly) |
 | `--evidence` | `-e` | **Append** evidence to the existing evidence array |
@@ -376,6 +381,25 @@ tasks close TSK-0001 --evidence "file: docs/release-notes.md"
 > Both archive the task to `closed.yaml`. `tasks close` is the dedicated command.
 > `tasks update --closed` is for when you also want to set a different status:
 > `tasks update TSK-NNNN --status cancelled --closed`.
+
+---
+
+### `tasks take <TSK-NNNN>`
+
+Mark a task as in-progress. Idempotent shorthand for `tasks update --status in-progress`.
+
+```bash
+tasks take TSK-0001                        # mark as in-progress
+tasks take TSK-0001 --owner rx             # mark as in-progress and set owner
+```
+
+**Options:**
+| Flag | Description |
+|------|-------------|
+| `--owner` | Optional owner/assignee for the task |
+
+> **Idempotent:** Safe to run on a task already in-progress. No error, no side effect.
+> **Symmetry:** The `owner` field can also be set via `tasks add --owner` or `tasks update --owner`.
 
 ---
 

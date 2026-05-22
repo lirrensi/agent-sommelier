@@ -79,11 +79,13 @@ def _parse_dep_option(dep_str: str) -> dict[str, str]:
 @click.option("--tag", "-t", "tags", multiple=True, help="Tag(s) to apply (repeatable)")
 @click.option("--priority", "-p", help="Priority: p0-p4, 0-4, or name (critical, urgent, high, medium, low, backlog)")
 @click.option("--source", "-s", type=click.Choice(list(VALID_SOURCES)), default="agent", help="Source of the task")
+@click.option("--owner", help="Optional owner/assignee of the task")
 @click.option("--dep", "deps", multiple=True, help="Dependency: id:type (e.g. TSK-0042:blocks, TSK-0017:relates)")
 @click.option("--related", "-r", help="Related task ID (shorthand for --dep id:relates)")
 @click.option("--notes", "-n", help="Freeform notes")
 @click.option("--evidence", "-e", help="Verification evidence / proof")
 def add(title: str, tags: tuple[str, ...], priority: str | None, source: str,
+        owner: str | None,
         deps: tuple[str, ...], related: str | None, notes: str | None,
         evidence: str | None):
     """Create a new task. ID is auto-generated."""
@@ -93,6 +95,7 @@ def add(title: str, tags: tuple[str, ...], priority: str | None, source: str,
         priority=priority,
         tags=list(tags) if tags else None,
         source=source,
+        owner=owner,
         deps=parsed_deps,
         related=related,
         notes=notes,
@@ -158,6 +161,30 @@ def list_cmd(status: str | None, tags: tuple[str, ...], tags_any: tuple[str, ...
 
 @main.command()
 @click.argument("task_id")
+@click.option("--owner", help="Optional owner to assign when taking")
+def take(task_id: str, owner: str | None):
+    """Mark a task as in-progress. Idempotent shorthand for --status in-progress.
+
+    Optionally assign an owner with --owner. Safe to re-run on tasks already
+    in-progress (does nothing but still succeeds).
+    """
+    try:
+        task = update_task(
+            task_id=task_id,
+            status="in-progress",
+            owner=owner,
+        )
+        click.echo(f"Task {task['id']} is now in-progress: {task['title']}")
+    except FileNotFoundError as e:
+        click.echo(str(e), err=True)
+        sys.exit(1)
+    except ValueError as e:
+        click.echo(str(e), err=True)
+        sys.exit(1)
+
+
+@main.command()
+@click.argument("task_id")
 def show(task_id: str):
     try:
         _, tasks = load_tasks_yaml()
@@ -185,6 +212,9 @@ def show(task_id: str):
         if task.get("source_ref"):
             src += f" ({task['source_ref']})"
         click.echo(f"  source: {src}")
+
+    if task.get("owner"):
+        click.echo(f"  owner: {task['owner']}")
 
     deps = task.get("deps")
     if deps:
@@ -239,6 +269,7 @@ def show(task_id: str):
 @click.option("--status", type=click.Choice(list(VALID_STATUSES)), help="Change status")
 @click.option("--tag", "-t", "tags", multiple=True, help="Tag(s) to append (repeatable)")
 @click.option("--priority", "-p", help="Change priority (p0-p4, 0-4, or name like urgent, high)")
+@click.option("--owner", help="Set or clear owner (empty string clears)")
 @click.option("--dep", "deps", multiple=True, help="Append dependency: id:type (repeatable)")
 @click.option("--related", "-r", help="Set related task ID (shorthand for --dep id:relates)")
 @click.option("--notes", "-n", help="Append a note (use --replace-notes to overwrite)")
@@ -247,6 +278,7 @@ def show(task_id: str):
 @click.option("--replace-evidence", is_flag=True, help="Replace evidence instead of appending")
 @click.option("--closed", "-c", is_flag=True, help="Close the task (move to closed.yaml)")
 def update(task_id: str, status: str | None, tags: tuple[str, ...], priority: str | None,
+           owner: str | None,
            deps: tuple[str, ...], related: str | None, notes: str | None,
            replace_notes: bool, evidence: str | None,
            replace_evidence: bool, closed: bool):
@@ -257,6 +289,7 @@ def update(task_id: str, status: str | None, tags: tuple[str, ...], priority: st
             status=status,
             priority=priority,
             tags=list(tags) if tags else None,
+            owner=owner,
             deps=parsed_deps,
             related=related,
             notes=notes,

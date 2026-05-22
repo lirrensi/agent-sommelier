@@ -414,11 +414,15 @@ Take a screenshot.
 
 Static, file-backed task tracking for project work. Lives in `tasks/` with no database or service, and preserves history across sessions.
 
-**Commands:** `tasks init`, `tasks add`, `tasks list`, `tasks next`, `tasks ready`, `tasks blocked`, `tasks status`, `tasks show`, `tasks update`, `tasks close`, `tasks history`, `tasks search`, `tasks inbox`.
+**Commands:** `tasks init`, `tasks add`, `tasks list`, `tasks next`, `tasks ready`, `tasks blocked`, `tasks status`, `tasks show`, `tasks take`, `tasks update`, `tasks close`, `tasks history`, `tasks search`, `tasks inbox`.
 
 **Use it for:** capturing work, tracking dependencies, finding the next unblocked task, and keeping the archive of completed work visible.
 
 Tasks can also carry `notes` and `evidence` as appendable string lists; `evidence` is the quick verification trail for later re-checks.
+
+The optional `owner` field records who is working on a task — set via `tasks add --owner <name>`, `tasks update TSK-NNNN --owner <name>`, or `tasks take TSK-NNNN --owner <name>`. When not set, the task is unowned and single-user workflows need not concern themselves with it.
+
+`tasks take TSK-NNNN` is a shorthand for marking a task in-progress — equivalent to `tasks update TSK-NNNN --status in-progress`. Idempotent: safe to re-run if already in-progress.
 
 ---
 

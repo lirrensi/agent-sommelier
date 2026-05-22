@@ -868,6 +868,71 @@ class TestCliUpdate:
         assert "closed_at" in closed_list[0]
 
 
+class TestTakeCommand:
+    """tasks take <id> — shorthand for marking in-progress."""
+
+    def test_take_sets_in_progress(self, initted: Path, runner: CliRunner) -> None:
+        runner.invoke(main, ["add", "My task"])
+        result = runner.invoke(main, ["take", "TSK-0001"])
+        assert result.exit_code == 0
+        assert "is now in-progress" in result.output
+        _, tasks = load_tasks_yaml()
+        assert tasks[0]["status"] == "in-progress"
+
+    def test_take_idempotent(self, initted: Path, runner: CliRunner) -> None:
+        runner.invoke(main, ["add", "My task"])
+        runner.invoke(main, ["take", "TSK-0001"])
+        result = runner.invoke(main, ["take", "TSK-0001"])
+        assert result.exit_code == 0
+        assert "is now in-progress" in result.output
+
+    def test_take_not_found(self, initted: Path, runner: CliRunner) -> None:
+        result = runner.invoke(main, ["take", "TSK-9999"])
+        assert result.exit_code == 1
+        assert "Task not found" in result.output
+
+    def test_take_with_owner(self, initted: Path, runner: CliRunner) -> None:
+        runner.invoke(main, ["add", "My task"])
+        result = runner.invoke(main, ["take", "TSK-0001", "--owner", "rx"])
+        assert result.exit_code == 0
+        _, tasks = load_tasks_yaml()
+        assert tasks[0]["owner"] == "rx"
+        assert tasks[0]["status"] == "in-progress"
+
+
+class TestOwnerField:
+    """Optional owner field on tasks."""
+
+    def test_add_with_owner(self, initted: Path, runner: CliRunner) -> None:
+        result = runner.invoke(main, ["add", "Task with owner", "--owner", "rx"])
+        assert result.exit_code == 0
+        _, tasks = load_tasks_yaml()
+        assert tasks[0]["owner"] == "rx"
+
+    def test_add_without_owner(self, initted: Path, runner: CliRunner) -> None:
+        runner.invoke(main, ["add", "Task without owner"])
+        _, tasks = load_tasks_yaml()
+        assert "owner" not in tasks[0]
+
+    def test_update_set_owner(self, initted: Path, runner: CliRunner) -> None:
+        runner.invoke(main, ["add", "My task"])
+        runner.invoke(main, ["update", "TSK-0001", "--owner", "alice"])
+        _, tasks = load_tasks_yaml()
+        assert tasks[0]["owner"] == "alice"
+
+    def test_update_clear_owner(self, initted: Path, runner: CliRunner) -> None:
+        runner.invoke(main, ["add", "My task", "--owner", "bob"])
+        runner.invoke(main, ["update", "TSK-0001", "--owner", ""])
+        _, tasks = load_tasks_yaml()
+        assert "owner" not in tasks[0]
+
+    def test_owner_in_show_output(self, initted: Path, runner: CliRunner) -> None:
+        runner.invoke(main, ["add", "My task", "--owner", "rx"])
+        result = runner.invoke(main, ["show", "TSK-0001"])
+        assert result.exit_code == 0
+        assert "rx" in result.output
+
+
 class TestCliClose:
     """tasks close <ID>"""
 
