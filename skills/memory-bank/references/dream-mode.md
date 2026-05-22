@@ -173,3 +173,5 @@ At the end of a dream pass:
 - procedural stays reusable
 - processed scope is clear
 - duplicate memory spam is avoided
+
+If memory files changed, rebuild `./memory/INDEX.md` with the script. Do **not** hand-edit `INDEX.md`; it is generated output and manual edits will be wiped on the next rebuild.

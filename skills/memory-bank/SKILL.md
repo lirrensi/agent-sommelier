@@ -313,11 +313,23 @@ python skills/memory-bank/scripts/index.py
 
 This keeps `INDEX.md` as a living map of everything saved. Future sessions should check `INDEX.md` first for orientation.
 
+**Never update `INDEX.md` by hand.** It is a generated artifact. If you want the index to read better, update the underlying memory files (especially their `summary`, `tags`, `status`, or filenames) and then run the index script again.
+
 ---
 
 ## INDEX.md Maintenance
 
-`INDEX.md` lives at `./memory/INDEX.md`. It is auto-generated — do not hand-edit it.
+`INDEX.md` lives at `./memory/INDEX.md`. It is auto-generated — **do not hand-edit it**.
+
+Treat `INDEX.md` like build output:
+- do **not** manually add notes there
+- do **not** manually fix links there
+- do **not** manually rewrite entries there
+- anything written there by hand can be wiped out the next time `index.py` runs
+
+If the index looks wrong or incomplete:
+- fix the actual memory files
+- then rerun `python skills/memory-bank/scripts/index.py`
 
 **What it contains:**
 - Table of contents by memory type
@@ -335,6 +347,8 @@ This keeps `INDEX.md` as a living map of everything saved. Future sessions shoul
 ```bash
 python skills/memory-bank/scripts/index.py
 ```
+
+If you updated one or many memory files, call the script. Do not try to keep `INDEX.md` in sync manually.
 
 **Orientation shortcut for future sessions:**
 ```bash
