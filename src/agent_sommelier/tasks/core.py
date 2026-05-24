@@ -16,7 +16,7 @@ import yaml
 # Constants
 # ---------------------------------------------------------------------------
 
-TASKS_DIR_NAME = "tasks"
+TASKS_DIR_NAME = ".agents/tasks"
 INBOX_FILE_NAME = "inbox.md"
 TASKS_FILE_NAME = "tasks.yaml"
 CLOSED_FILE_NAME = "closed.yaml"
@@ -414,8 +414,9 @@ def build_overview_data(tasks: list[dict[str, Any]], closed_list: list[dict[str,
         task_view = dict(task)
         task_view["hint"] = _overview_task_hint(task, active_tasks, closed_list)
         status = str(task.get("status") or "")
+        is_claimed = bool(task.get("claimed"))
         is_blocked = _is_task_blocked(task, active_tasks, closed_list)
-        if status in {"in-progress", "review"}:
+        if status in {"in-progress", "review"} or is_claimed:
             sections["now"].append(task_view)
         elif status == "todo" and not is_blocked:
             sections["ready"].append(task_view)
@@ -500,7 +501,8 @@ def next_counter_and_id() -> tuple[int, str]:
 
 
 def add_task(title: str, priority: int | str | None = None, tags: list[str] | None = None,
-             source: str | None = None, owner: str | None = None,
+             source: str | None = None, claimed: str | None = None,
+             created_by: str | None = None,
              deps: list[dict[str, str]] | None = None,
              related: str | None = None, notes: str | None = None,
              evidence: str | None = None) -> dict[str, Any]:
@@ -527,8 +529,10 @@ def add_task(title: str, priority: int | str | None = None, tags: list[str] | No
         task["tags"] = [t.lower().strip().replace(" ", "-") for t in tags]
     if source:
         task["source"] = source
-    if owner:
-        task["owner"] = owner
+    if claimed:
+        task["claimed"] = claimed
+    if created_by:
+        task["createdBy"] = created_by
     if deps:
         task["deps"] = deps
     elif related:
@@ -544,7 +548,8 @@ def add_task(title: str, priority: int | str | None = None, tags: list[str] | No
 
 
 def update_task(task_id: str, status: str | None = None, priority: int | str | None = None,
-                tags: list[str] | None = None, owner: str | None = None,
+                tags: list[str] | None = None, claimed: str | None = None,
+                created_by: str | None = None,
                 deps: list[dict[str, str]] | None = None,
                 related: str | None = None, notes: str | None = None, replace_notes: bool = False,
                 evidence: str | None = None, replace_evidence: bool = False,
@@ -567,11 +572,16 @@ def update_task(task_id: str, status: str | None = None, priority: int | str | N
             if tag not in existing:
                 existing.append(tag)
         task["tags"] = existing
-    if owner is not None:
-        if owner:
-            task["owner"] = owner
+    if claimed is not None:
+        if claimed:
+            task["claimed"] = claimed
         else:
-            task.pop("owner", None)
+            task.pop("claimed", None)
+    if created_by is not None:
+        if created_by:
+            task["createdBy"] = created_by
+        else:
+            task.pop("createdBy", None)
     if deps:
         existing_deps = _ensure_deps_field(task)
         for dep in deps:
@@ -676,6 +686,8 @@ def _task_text(task: dict[str, Any]) -> str:
         task.get("status", ""),
         str(task.get("priority", "")),
         task.get("source", ""),
+        task.get("claimed", ""),
+        task.get("createdBy", ""),
         " ".join(task.get("tags", []) or []),
     ]
     for dep in (task.get("deps") or []):

@@ -44,7 +44,7 @@ All tools use **Click** (`click >= 8.1.0`) for CLI argument parsing and command 
 
 ### Storage Pattern
 - **JSON files** for structured data (jobs, metadata)
-- **YAML files** for repo-local task state (`tasks/tasks.yaml`, `tasks/closed.yaml`)
+- **YAML files** for repo-local task state (`.agents/tasks/tasks.yaml`, `.agents/tasks/closed.yaml`)
 - **Temp directories** for transient data (screenshots, bg job output)
 - **Home directory** (`~`) for persistent config (`.crony/`)
 
@@ -436,7 +436,8 @@ tasks = "agent_sommelier.tasks:main"
 - `tasks overview` — Read-only vertical overview of active work
 - `tasks take` — Shorthand to mark a task in-progress (idempotent)
 - `tasks show` — Render one task in full
-- `tasks update` — Edit task fields and status (supports `--owner` and `--claim` when that flag is preferred)
+- `tasks update` — Edit task fields and status (supports `--claimed` and `--created-by`)
+- `tasks claim` — Alias for `tasks take`
 - `tasks close` — Archive a task
 - `tasks history` — Browse closed tasks
 - `tasks search` — Full-text search across active + closed tasks
@@ -445,13 +446,13 @@ tasks = "agent_sommelier.tasks:main"
 ### Storage
 
 ```
-tasks/
+.agents/tasks/
 ├── inbox.md      # Free-form scratchpad for ideas and intake
 ├── tasks.yaml    # Active task list and metadata
 └── closed.yaml   # Append-only closed archive
 ```
 
-The task system is static and file-based. `tasks.yaml` is the active source of truth, `closed.yaml` is the archive, and the inbox is deliberately free-form intake. Statuses, priorities, dependencies, notes, evidence, and the optional `owner` field are all persisted in YAML so the repo can carry work across sessions.
+The task system is static and file-based. `tasks.yaml` is the active source of truth, `closed.yaml` is the archive, and the inbox is deliberately free-form intake. Statuses, priorities, dependencies, notes, evidence, and the optional `claimed` / `createdBy` fields are all persisted in YAML so the repo can carry work across sessions.
 
 ### Behavior Notes
 
@@ -459,8 +460,8 @@ The task system is static and file-based. `tasks.yaml` is the active source of t
 - typed deps include `blocks`, `parent`, `child`, `discovered`, and `relates`
 - `blocks` drives readiness and blocked-state reporting
 - `tasks overview` uses overview-specific Rich section rendering for a vertical dashboard-like view without adding interactivity
-- `tasks take` is a dedicated shorthand for `tasks update --status in-progress`; it accepts an optional `--owner` flag but otherwise performs no additional side effects
-- `tasks update` can change status, tags, priority, deps, notes, evidence, closure, and the optional `owner` field in one pass
+- `tasks take` and `tasks claim` are shorthands for `tasks update --status in-progress --claimed agent`; they accept an optional `--claimed` flag but otherwise perform no additional side effects
+- `tasks update` can change status, tags, priority, deps, notes, evidence, closure, and the optional `claimed` / `createdBy` fields in one pass
 - `tasks history` and `tasks search` make the archive useful, not just hidden
 
 ---

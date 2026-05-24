@@ -79,13 +79,14 @@ def _parse_dep_option(dep_str: str) -> dict[str, str]:
 @click.option("--tag", "-t", "tags", multiple=True, help="Tag(s) to apply (repeatable)")
 @click.option("--priority", "-p", help="Priority: p0-p4, 0-4, or name (critical, urgent, high, medium, low, backlog)")
 @click.option("--source", "-s", type=click.Choice(list(VALID_SOURCES)), default="agent", help="Source of the task")
-@click.option("--owner", help="Optional owner/assignee of the task")
+@click.option("--claimed", help="Who is actively working this task (non-empty = locked from ready/next queues)")
+@click.option("--created-by", "created_by", help="Who or what created this task (e.g. rx, agent, gmail-import)")
 @click.option("--dep", "deps", multiple=True, help="Dependency: id:type (e.g. TSK-0042:blocks, TSK-0017:relates)")
 @click.option("--related", "-r", help="Related task ID (shorthand for --dep id:relates)")
 @click.option("--notes", "-n", help="Freeform notes")
 @click.option("--evidence", "-e", help="Verification evidence / proof")
 def add(title: str, tags: tuple[str, ...], priority: str | None, source: str,
-        owner: str | None,
+        claimed: str | None, created_by: str | None,
         deps: tuple[str, ...], related: str | None, notes: str | None,
         evidence: str | None):
     """Create a new task. ID is auto-generated."""
@@ -95,7 +96,8 @@ def add(title: str, tags: tuple[str, ...], priority: str | None, source: str,
         priority=priority,
         tags=list(tags) if tags else None,
         source=source,
-        owner=owner,
+        claimed=claimed,
+        created_by=created_by,
         deps=parsed_deps,
         related=related,
         notes=notes,
@@ -161,20 +163,44 @@ def list_cmd(status: str | None, tags: tuple[str, ...], tags_any: tuple[str, ...
 
 @main.command()
 @click.argument("task_id")
-@click.option("--owner", help="Optional owner to assign when taking")
-def take(task_id: str, owner: str | None):
-    """Mark a task as in-progress. Idempotent shorthand for --status in-progress.
+@click.option("--claimed", default="agent", help="Who is claiming this task (default: agent). Empty string clears the claim.")
+def take(task_id: str, claimed: str):
+    """Mark a task as in-progress and claim it. Idempotent shorthand.
 
-    Optionally assign an owner with --owner. Safe to re-run on tasks already
-    in-progress (does nothing but still succeeds).
+    Defaults --claimed to "agent" so the task is always locked after taking.
+    Use `tasks update TSK-NNNN --claimed ""` to release a claim.
+    Safe to re-run on tasks already in-progress (does nothing but still succeeds).
     """
     try:
         task = update_task(
             task_id=task_id,
             status="in-progress",
-            owner=owner,
+            claimed=claimed,
         )
-        click.echo(f"Task {task['id']} is now in-progress: {task['title']}")
+        click.echo(f"Task {task['id']} is now in-progress (claimed: {task.get('claimed', 'unset')}): {task['title']}")
+    except FileNotFoundError as e:
+        click.echo(str(e), err=True)
+        sys.exit(1)
+    except ValueError as e:
+        click.echo(str(e), err=True)
+        sys.exit(1)
+
+
+@main.command()
+@click.argument("task_id")
+@click.option("--claimed", default="agent", help="Who is claiming this task (default: agent). Empty string clears the claim.")
+def claim(task_id: str, claimed: str):
+    """Alias for 'take' -- mark a task as in-progress and claim it.
+
+    Defaults --claimed to "agent" so the task is always locked.
+    """
+    try:
+        task = update_task(
+            task_id=task_id,
+            status="in-progress",
+            claimed=claimed,
+        )
+        click.echo(f"Task {task['id']} is now in-progress (claimed: {task.get('claimed', 'unset')}): {task['title']}")
     except FileNotFoundError as e:
         click.echo(str(e), err=True)
         sys.exit(1)
@@ -213,8 +239,10 @@ def show(task_id: str):
             src += f" ({task['source_ref']})"
         click.echo(f"  source: {src}")
 
-    if task.get("owner"):
-        click.echo(f"  owner: {task['owner']}")
+    if task.get("claimed"):
+        click.echo(f"  claimed: {task['claimed']}")
+    if task.get("createdBy"):
+        click.echo(f"  createdBy: {task['createdBy']}")
 
     deps = task.get("deps")
     if deps:
@@ -269,7 +297,8 @@ def show(task_id: str):
 @click.option("--status", type=click.Choice(list(VALID_STATUSES)), help="Change status")
 @click.option("--tag", "-t", "tags", multiple=True, help="Tag(s) to append (repeatable)")
 @click.option("--priority", "-p", help="Change priority (p0-p4, 0-4, or name like urgent, high)")
-@click.option("--owner", help="Set or clear owner (empty string clears)")
+@click.option("--claimed", help="Set or clear claim (empty string clears). Claimed tasks are locked from ready/next queues.")
+@click.option("--created-by", "created_by", help="Set or clear createdBy metadata (empty string clears)")
 @click.option("--dep", "deps", multiple=True, help="Append dependency: id:type (repeatable)")
 @click.option("--related", "-r", help="Set related task ID (shorthand for --dep id:relates)")
 @click.option("--notes", "-n", help="Append a note (use --replace-notes to overwrite)")
@@ -278,7 +307,7 @@ def show(task_id: str):
 @click.option("--replace-evidence", is_flag=True, help="Replace evidence instead of appending")
 @click.option("--closed", "-c", is_flag=True, help="Close the task (move to closed.yaml)")
 def update(task_id: str, status: str | None, tags: tuple[str, ...], priority: str | None,
-           owner: str | None,
+           claimed: str | None, created_by: str | None,
            deps: tuple[str, ...], related: str | None, notes: str | None,
            replace_notes: bool, evidence: str | None,
            replace_evidence: bool, closed: bool):
@@ -289,7 +318,8 @@ def update(task_id: str, status: str | None, tags: tuple[str, ...], priority: st
             status=status,
             priority=priority,
             tags=list(tags) if tags else None,
-            owner=owner,
+            claimed=claimed,
+            created_by=created_by,
             deps=parsed_deps,
             related=related,
             notes=notes,
@@ -340,6 +370,8 @@ def next_cmd(take: str, tag: str | None, priority: str | None,
 
     candidates = [t for t in tasks if t.get("status") == "todo"]
     candidates = [t for t in candidates if not t.get("closed", False)]
+    # Exclude claimed tasks (claimed + in-progress or just claimed)
+    candidates = [t for t in candidates if not t.get("claimed")]
     candidates = filter_tasks(candidates, tags=[tag] if tag else None, priority=priority)
 
     skip = skip_related or skip_blocks
@@ -649,7 +681,7 @@ def ready(take: str, tag: str | None, json_output: bool):
         click.echo(str(e), err=True)
         sys.exit(1)
 
-    candidates = [t for t in tasks if t.get("status") == "todo" and not t.get("closed", False) and not _is_task_blocked(t, tasks, closed_list)]
+    candidates = [t for t in tasks if t.get("status") == "todo" and not t.get("closed", False) and not _is_task_blocked(t, tasks, closed_list) and not t.get("claimed")]
 
     if tag:
         candidates = [t for t in candidates if tag in (t.get("tags") or [])]

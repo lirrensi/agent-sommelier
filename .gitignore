@@ -50,3 +50,4 @@ tasks/
 !src/agent_sommelier/tasks/render.py
 .opencode/
 memory
+.agents/

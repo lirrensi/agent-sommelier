@@ -13,7 +13,7 @@ A lightweight, **static, file-based task management system** embedded directly i
 
 ## Core Philosophy
 
-- **Static, file-based, in-repo** — Three files in `tasks/`: `inbox.md`, `tasks.yaml`, `closed.yaml`. No database, no service, no setup beyond `tasks init`.
+- **Static, file-based, in-repo** — Three files in `.agents/tasks/`: `inbox.md`, `tasks.yaml`, `closed.yaml`. No database, no service, no setup beyond `tasks init`.
 - **Tasks are permanent history** — Nothing is ever deleted. Tasks flow from `tasks.yaml` (active) to `closed.yaml` (archive). Once a task is created, its record persists for the life of the repository.
 - **Purpose: manage project complexity** — Track what needs doing, what is in progress, what is done. Keep the agent and human aligned on priorities without losing context across sessions.
 - **12 statuses, any lifecycle** — Tasks can hold any of 12 statuses: `todo`, `in-progress`, `done`, `blocked`, `postponed`, `cancelled`, `review`, `waiting`, `parked`, `deferred`, `backlog`, `abandoned`. You move between them freely with `tasks update --status <name>` — there are no restrictions on transitions.
@@ -44,7 +44,7 @@ The inbox is the opposite — it is explicitly a free-form scratch file. Write t
 
 ```
 <project-root>/
-  tasks/
+  .agents/tasks/
     inbox.md       # Raw dump zone — paste ideas, notes, scraps here
     tasks.yaml     # Active task list (any status, closed=false)
     closed.yaml    # Closed task archive (append-only, permanent)
@@ -79,7 +79,9 @@ Use `tasks update TSK-NNNN --status <name>` to change any task's status at any t
 
 ```bash
 tasks take TSK-0001                             # shorthand: start working (idempotent)
-tasks take TSK-0001 --owner rx                  # start working, assign owner
+tasks take TSK-0001 --claimed rx                # start working, claim it as yours
+tasks claim TSK-0001                            # alias: same as 'take'
+tasks claim TSK-0001 --claimed rx               # alias with explicit claim
 tasks update TSK-0001 --status in-progress      # start working (explicit)
 tasks update TSK-0001 --status blocked           # hit a blocker
 tasks update TSK-0001 --status waiting           # waiting on someone
@@ -156,16 +158,16 @@ All commands run as `tasks <command>` from the project root.
 
 ### `tasks init`
 
-Bootstrap the task system. Creates `tasks/`, `inbox.md`, `tasks.yaml`, and `closed.yaml`.
+Bootstrap the task system. Creates `.agents/tasks/`, `inbox.md`, `tasks.yaml`, and `closed.yaml`.
 
 - **Idempotent** — safe to run multiple times. Existing data is never touched.
 - Run this first in any new project that should use the task system.
 
 ```bash
 tasks init
-# → Created tasks/inbox.md
-# → Created tasks/tasks.yaml
-# → Created tasks/closed.yaml
+# → Created .agents/tasks/inbox.md
+# → Created .agents/tasks/tasks.yaml
+# → Created .agents/tasks/closed.yaml
 # → Task system initialized.
 ```
 
@@ -178,7 +180,7 @@ Create a new task. ID is auto-generated.
 ```bash
 tasks add "Refactor auth middleware"
 tasks add "Fix login bug" --tag bug --tag urgent --priority p0 --source audit
-tasks add "Refactor auth" --owner rx --tag refactor --priority p1
+tasks add "Refactor auth" --claimed rx --created-by rx --tag refactor --priority p1
 tasks add "Write tests" --dep TSK-0003:blocks --notes "Must cover edge cases"
 tasks add "Proof trail" --evidence "file: src/agent_sommelier/tasks/core.py"
 tasks add "Blocked by API" --dep TSK-0002:blocks --priority high
@@ -191,7 +193,8 @@ tasks add "Related docs" --related TSK-0005
 | `--tag` | `-t` | Tag(s) to apply (repeatable, e.g. `-t bug -t ui`) |
 | `--priority` | `-p` | Priority: `0`–`4` or name (`critical`, `urgent`, `high`, `medium`, `low`, `backlog`) |
 | `--source` | `-s` | Source: `inbox`, `audit`, `test`, `jira`, `agent`, `idea` (default: `agent`) |
-| `--owner` | — | Optional owner/assignee for the task |
+| `--claimed` | — | Who is actively working this task. Non-empty locks it from `next`/`ready` queues |
+| `--created-by` | — | Who or what created this task (e.g. `rx`, `agent`, `gmail-import`) |
 | `--dep` | — | Dependency in `id:type` format (e.g. `TSK-0042:blocks`). Types: `blocks`, `parent`, `child`, `discovered`, `relates`. Repeatable. |
 | `--related` | `-r` | Related task ID (shorthand for `--dep id:relates`) |
 | `--notes` | `-n` | Freeform notes (stored as array — see below) |
@@ -319,7 +322,8 @@ tasks update TSK-0001 --related TSK-0003         # shorthand for --dep id:relate
 | `--tag` | `-t` | **Append** tag(s) to existing tags (repeatable) — does NOT replace |
 | `--dep` | — | **Append** dependency in `id:type` format (repeatable). Types: `blocks`, `parent`, `child`, `discovered`, `relates`. |
 | `--related` | `-r` | Set related task ID (shorthand for `--dep id:relates`) |
-| `--owner` | — | Set or clear owner (empty string clears) |
+| `--claimed` | — | Set or clear claim (empty string clears). Claimed tasks are locked from `next`/`ready` queues |
+| `--created-by` | — | Set or clear `createdBy` metadata (empty string clears) |
 | `--notes` | `-n` | **Append** a note to the existing notes array |
 | `--replace-notes` | — | **Replace** all notes (use sparingly) |
 | `--evidence` | `-e` | **Append** evidence to the existing evidence array |
@@ -384,22 +388,26 @@ tasks close TSK-0001 --evidence "file: docs/release-notes.md"
 
 ---
 
-### `tasks take <TSK-NNNN>`
+### `tasks take <TSK-NNNN>` / `tasks claim <TSK-NNNN>`
 
-Mark a task as in-progress. Idempotent shorthand for `tasks update --status in-progress`.
+Mark a task as in-progress and claim it. Idempotent shorthand for `tasks update --status in-progress --claimed agent`.
 
 ```bash
-tasks take TSK-0001                        # mark as in-progress
-tasks take TSK-0001 --owner rx             # mark as in-progress and set owner
+tasks take TSK-0001                        # mark as in-progress, claimed as "agent"
+tasks take TSK-0001 --claimed rx           # mark as in-progress, claimed as "rx"
+tasks claim TSK-0001                       # alias: same as 'take'
+tasks claim TSK-0001 --claimed rx          # alias with explicit claim
 ```
 
 **Options:**
 | Flag | Description |
 |------|-------------|
-| `--owner` | Optional owner/assignee for the task |
+| `--claimed` | Who is claiming this task (default: `agent`). Empty string clears the claim. |
 
-> **Idempotent:** Safe to run on a task already in-progress. No error, no side effect.
-> **Symmetry:** The `owner` field can also be set via `tasks add --owner` or `tasks update --owner`.
+> **Defaults:** When no `--claimed` is passed, defaults to `"agent"` so the task is always locked after take/claim.
+> **Idempotent:** Safe to re-run on a task already in-progress. No error, no side effect.
+> **Claim locks the task:** Claimed tasks are excluded from `tasks next` and `tasks ready` queues.
+> **Clearing:** Use `tasks update TSK-NNNN --claimed ""` to release a claim without changing status.
 
 ---
 
@@ -507,10 +515,10 @@ tasks inbox | wc -l            # Count inbox lines (or use `tasks status`)
 - Writing quick notes without worrying about structure
 
 **Typical inbox workflow:**
-1. Read the inbox: `tasks inbox` (or open `tasks/inbox.md` directly)
+1. Read the inbox: `tasks inbox` (or open `.agents/tasks/inbox.md` directly)
 2. Process **every** actionable item — format each into a proper task with `tasks add "..." --source inbox --tags ...`
 3. Show the user the full list of tasks you're about to create — **get explicit confirmation** before proceeding
-4. Only after confirmation, wipe `tasks/inbox.md` completely — leave it empty so it starts fresh for new ideas
+4. Only after confirmation, wipe `.agents/tasks/inbox.md` completely — leave it empty so it starts fresh for new ideas
 
 The inbox is the input funnel. Tasks are the structured output. **Never leave old scraps behind.**
 
@@ -653,8 +661,8 @@ tasks add "Update README with API examples" --source inbox --priority low --tag 
 #    Only create tasks after explicit confirmation.
 
 # 4. Clear the inbox completely — leave it empty
-echo. > tasks/inbox.md          # Windows: wipe file to blank
-# > tasks/inbox.md              # Unix: wipe file to blank
+echo. > .agents/tasks/inbox.md          # Windows: wipe file to blank
+# > .agents/tasks/inbox.md              # Unix: wipe file to blank
 ```
 
 **Ingress Rules:**
@@ -776,7 +784,7 @@ Use the task system **proactively** — not just when asked. Good triggers:
   ```bash
   tasks inbox                             # read ALL raw entries
   tasks add "..." --source inbox          # draft tasks for every actionable item
-  # Confirm with user, then wipe tasks/inbox.md completely (empty file)
+  # Confirm with user, then wipe .agents/tasks/inbox.md completely (empty file)
   ```
 - **Before significant changes**: Check `tasks list --status in-progress` to know what's actively being worked on.
 

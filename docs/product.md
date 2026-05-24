@@ -412,7 +412,7 @@ Take a screenshot.
 
 ## Tool: tasks — In-Repo Task Management
 
-Static, file-backed task tracking for project work. Lives in `tasks/` with no database or service, and preserves history across sessions.
+Static, file-backed task tracking for project work. Lives in `.agents/tasks/` with no database or service, and preserves history across sessions.
 
 **Commands:** `tasks init`, `tasks add`, `tasks list`, `tasks next`, `tasks ready`, `tasks blocked`, `tasks status`, `tasks show`, `tasks take`, `tasks update`, `tasks close`, `tasks history`, `tasks search`, `tasks inbox`.
 
@@ -420,9 +420,12 @@ Static, file-backed task tracking for project work. Lives in `tasks/` with no da
 
 Tasks can also carry `notes` and `evidence` as appendable string lists; `evidence` is the quick verification trail for later re-checks.
 
-The optional `owner` field records who is working on a task — set via `tasks add --owner <name>`, `tasks update TSK-NNNN --owner <name>`, or `tasks take TSK-NNNN --owner <name>`. When not set, the task is unowned and single-user workflows need not concern themselves with it.
+Two optional identity fields:
 
-`tasks take TSK-NNNN` is a shorthand for marking a task in-progress — equivalent to `tasks update TSK-NNNN --status in-progress`. Idempotent: safe to re-run if already in-progress.
+- **`claimed`** — who is actively working on this task. When non-empty, the task is locked and excluded from `next`/`ready` queues. Set via `--claimed` on `add`, `take`, `claim`, or `update`. Clear via `--claimed ""`.
+- **`createdBy`** — who or what created the task. Pure metadata for distinguishing manual vs automated creation. Set via `--created-by` on `add` or `update`.
+
+`tasks take TSK-NNNN` is a shorthand for claiming and starting work — equivalent to `tasks update TSK-NNNN --status in-progress --claimed agent`. Defaults `claimed` to `"agent"` if no `--claimed` flag is passed. `tasks claim` is an alias for `tasks take`. Both are idempotent: safe to re-run if already in-progress.
 
 ---
 
