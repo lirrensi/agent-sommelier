@@ -27,7 +27,6 @@ from agent_sommelier.tasks import (
     TASKS_HEADER,
     VALID_PRIORITIES,
     VALID_SOURCES,
-    VALID_STATUSES,
     _collect_all_tags,
     _find_task_by_id,
     _format_id,
@@ -90,6 +89,101 @@ def _assert_task_fields(task: dict[str, Any], **expected: Any) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# Config tests
+# ---------------------------------------------------------------------------
+
+
+class TestConfig:
+    """Config loading, defaults, and injection."""
+
+    def test_default_config_injected_when_missing(self, tmp_cwd):
+        """Loading a tasks.yaml without meta.config injects defaults."""
+        (tmp_cwd / ".agents" / "tasks").mkdir(parents=True, exist_ok=True)
+        data = {"meta": {"counter": 0}, "tasks": []}
+        content = yaml.safe_dump(data, default_flow_style=False, sort_keys=False)
+        (tmp_cwd / ".agents" / "tasks" / "tasks.yaml").write_text(content, encoding="utf-8")
+        meta, tasks = load_tasks_yaml()
+        assert "config" in meta
+        assert meta["config"]["default_status"] == "todo"
+        assert meta["config"]["ready_status"] == "todo"
+        assert meta["config"]["active_status"] == "in-progress"
+        assert meta["config"]["close_status"] == "done"
+        assert isinstance(meta["config"]["statuses"], list)
+
+    def test_config_preserved_when_present(self, tmp_cwd):
+        """An existing config is kept as-is."""
+        (tmp_cwd / ".agents" / "tasks").mkdir(parents=True, exist_ok=True)
+        custom = {"statuses": ["icebox", "next", "active", "done"], "default_status": "icebox", "ready_status": "next", "active_status": "active", "close_status": "done"}
+        data = {"meta": {"counter": 0, "config": custom}, "tasks": []}
+        content = yaml.safe_dump(data, default_flow_style=False, sort_keys=False)
+        (tmp_cwd / ".agents" / "tasks" / "tasks.yaml").write_text(content, encoding="utf-8")
+        meta, tasks = load_tasks_yaml()
+        assert meta["config"]["default_status"] == "icebox"
+
+    def test_init_writes_default_config(self, initted):
+        """tasks init writes config with defaults."""
+        raw = yaml.safe_load((initted / ".agents" / "tasks" / "tasks.yaml").read_text(encoding="utf-8"))
+        assert "config" in raw["meta"]
+        assert raw["meta"]["config"]["default_status"] == "todo"
+
+    def test_add_uses_config_default_status(self, initted):
+        """add_task uses config.default_status."""
+        add_task("test")
+        _, tasks = load_tasks_yaml()
+        assert tasks[0]["status"] == "todo"
+
+    def test_add_uses_custom_default_status(self, tmp_cwd):
+        """With a custom default_status, add_task uses that."""
+        (tmp_cwd / ".agents" / "tasks").mkdir(parents=True, exist_ok=True)
+        custom = {"statuses": ["backlog", "todo", "in-progress", "done"], "default_status": "backlog", "ready_status": "todo", "active_status": "in-progress", "close_status": "done"}
+        data = {"meta": {"counter": 0, "config": custom}, "tasks": []}
+        content = yaml.safe_dump(data, default_flow_style=False, sort_keys=False)
+        (tmp_cwd / ".agents" / "tasks" / "tasks.yaml").write_text(content, encoding="utf-8")
+        add_task("custom test")
+        _, tasks = load_tasks_yaml()
+        assert tasks[0]["status"] == "backlog"
+
+    def test_update_rejects_invalid_status(self, initted):
+        """update_task raises ValueError for status not in config.statuses."""
+        add_task("test")
+        with pytest.raises(ValueError, match="Invalid status"):
+            update_task("TSK-0001", status="nonsense")
+
+    def test_take_uses_config_active_status(self, tmp_cwd, runner):
+        """take moves to config.active_status instead of hardcoded 'in-progress'."""
+        (tmp_cwd / ".agents" / "tasks").mkdir(parents=True, exist_ok=True)
+        custom = {"statuses": ["todo", "active", "done"], "default_status": "todo", "ready_status": "todo", "active_status": "active", "close_status": "done"}
+        data = {"meta": {"counter": 0, "config": custom}, "tasks": []}
+        content = yaml.safe_dump(data, default_flow_style=False, sort_keys=False)
+        (tmp_cwd / ".agents" / "tasks" / "tasks.yaml").write_text(content, encoding="utf-8")
+        init_task_files()  # writes config
+        # add_task uses default_status="todo" from config
+        runner.invoke(main, ["add", "test"])
+        result = runner.invoke(main, ["take", "TSK-0001"])
+        assert result.exit_code == 0
+        _, tasks = load_tasks_yaml()
+        assert tasks[0]["status"] == "active"
+
+    def test_next_filters_by_config_ready_status(self, tmp_cwd, runner):
+        """next pulls from config.ready_status."""
+        (tmp_cwd / ".agents" / "tasks").mkdir(parents=True, exist_ok=True)
+        custom = {"statuses": ["backlog", "ready", "active", "done"], "default_status": "backlog", "ready_status": "ready", "active_status": "active", "close_status": "done"}
+        data = {"meta": {"counter": 0, "config": custom}, "tasks": []}
+        content = yaml.safe_dump(data, default_flow_style=False, sort_keys=False)
+        (tmp_cwd / ".agents" / "tasks" / "tasks.yaml").write_text(content, encoding="utf-8")
+        init_task_files()
+        runner.invoke(main, ["add", "task-in-backlog"])       # default_status=backlog
+        runner.invoke(main, ["add", "task-in-ready"])         # default_status=backlog
+        runner.invoke(main, ["update", "TSK-0002", "--status", "ready"])
+        result = runner.invoke(main, ["next"])
+        assert result.exit_code == 0
+        assert "task-in-ready" in result.output
+        # backlog task should NOT appear in next output
+        task_ids_in_output = [line for line in result.output.splitlines() if "TSK-" in line]
+        assert all("backlog" not in line for line in task_ids_in_output) or "task-in-backlog" not in result.output
+
+
 # ===========================================================================
 # DATA LAYER TESTS
 # ===========================================================================
@@ -120,9 +214,12 @@ class TestFileIO:
         assert len(results) == 3
 
     def test_init_tasks_yaml_structure(self, initted: Path) -> None:
-        """Freshly created tasks.yaml has counter=0 and empty tasks list."""
+        """Freshly created tasks.yaml has counter=0, config defaults, and empty tasks list."""
         meta, tasks = load_tasks_yaml()
-        assert meta == {"counter": 0}
+        assert meta["counter"] == 0
+        assert "config" in meta
+        assert meta["config"]["default_status"] == "todo"
+        assert isinstance(meta["config"]["statuses"], list)
         assert tasks == []
 
     def test_init_closed_yaml_structure(self, initted: Path) -> None:
@@ -131,7 +228,7 @@ class TestFileIO:
 
     def test_save_and_load_roundtrip(self, initted: Path) -> None:
         """YAML round-trip: save then load returns identical data."""
-        meta = {"counter": 5}
+        meta = {"counter": 5, "config": {"statuses": ["todo", "done"], "default_status": "todo", "ready_status": "todo", "active_status": "in-progress", "close_status": "done"}}
         tasks = [{"id": "TSK-0001", "title": "test", "status": "todo", "evidence": ["file: src/example.py"]}]
         save_tasks_yaml(meta, tasks)
         loaded_meta, loaded_tasks = load_tasks_yaml()
@@ -1168,9 +1265,9 @@ class TestCliStatus:
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["counts"]["todo"] == 2
-        assert data["counts"]["in_progress"] == 0
+        assert data["counts"]["in-progress"] == 0
         assert isinstance(data["top_priority"], list)
-        assert isinstance(data["in_progress"], list)
+        assert isinstance(data["in-progress"], list)
         assert isinstance(data["tags"], dict)
         assert isinstance(data["inbox_entries"], int)
 
@@ -1179,9 +1276,9 @@ class TestCliStatus:
         runner.invoke(main, ["update", "TSK-0001", "--status", "in-progress"])
         result = runner.invoke(main, ["status", "--json"])
         data = json.loads(result.output)
-        assert data["counts"]["in_progress"] == 1
-        assert len(data["in_progress"]) == 1
-        assert data["in_progress"][0]["id"] == "TSK-0001"
+        assert data["counts"]["in-progress"] == 1
+        assert len(data["in-progress"]) == 1
+        assert data["in-progress"][0]["id"] == "TSK-0001"
 
     def test_status_file_not_found(self, tmp_cwd: Path, runner: CliRunner) -> None:
         result = runner.invoke(main, ["status"])

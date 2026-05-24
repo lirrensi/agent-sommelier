@@ -21,13 +21,26 @@ INBOX_FILE_NAME = "inbox.md"
 TASKS_FILE_NAME = "tasks.yaml"
 CLOSED_FILE_NAME = "closed.yaml"
 
-VALID_STATUSES = {
-    "todo", "in-progress", "done",
-    "blocked", "postponed", "cancelled",
-    "review", "waiting",
-    "parked", "deferred", "backlog",
-    "abandoned",
+DEFAULT_TASK_CONFIG: dict[str, Any] = {
+    "statuses": ["todo", "in-progress", "done", "blocked", "postponed", "cancelled",
+                 "review", "waiting", "parked", "deferred", "backlog", "abandoned"],
+    "default_status": "todo",
+    "ready_status": "todo",
+    "active_status": "in-progress",
+    "close_status": "done",
 }
+
+
+def _ensure_config(meta: dict[str, Any]) -> dict[str, Any]:
+    """Return task config from meta, injecting defaults for any missing keys."""
+    cfg = meta.get("config", {})
+    if not isinstance(cfg, dict):
+        cfg = {}
+    merged = dict(DEFAULT_TASK_CONFIG)
+    merged.update(cfg)
+    return merged
+
+
 VALID_PRIORITIES = {0, 1, 2, 3, 4}
 VALID_SOURCES = {"inbox", "audit", "test", "jira", "agent", "idea"}
 VALID_DEP_TYPES = {"blocks", "parent", "child", "discovered", "relates"}
@@ -69,8 +82,7 @@ TASKS_HEADER = """\
 #   tasks search <text>     Full-text search across all tasks
 #   tasks --help            Full documentation
 #
-# Statuses:  todo, in-progress, done, blocked, postponed, cancelled,
-#            review, waiting, parked, deferred, backlog, abandoned
+# Statuses:  configurable in meta.config at top of this file
 # Closed:    tasks close TSK-NNNN  or  tasks update --closed
 # Priority:  p0 (critical) > p1 > p2 > p3 > p4 (backlog)
 # Newest at top, oldest at bottom.
@@ -137,6 +149,8 @@ def load_tasks_yaml() -> tuple[dict[str, Any], list[dict[str, Any]]]:
     meta = raw.get("meta", {})
     if not isinstance(meta, dict):
         meta = {}
+    if "config" not in meta or not isinstance(meta.get("config"), dict):
+        meta["config"] = dict(DEFAULT_TASK_CONFIG)
     tasks = raw.get("tasks", [])
     if not isinstance(tasks, list):
         tasks = []
@@ -307,18 +321,18 @@ def _resolve_related(task_id: str, tasks_yaml: list[dict[str, Any]], closed_yaml
     return _find_task_by_id(closed_yaml, task_id)
 
 
-def _get_blockers(task: dict[str, Any], tasks_list: list[dict[str, Any]], closed_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _get_blockers(task: dict[str, Any], tasks_list: list[dict[str, Any]], closed_list: list[dict[str, Any]], close_status: str = "done") -> list[dict[str, Any]]:
     block_ids = _get_dep_ids(task, dep_type="blocks")
     blockers: list[dict[str, Any]] = []
     for bid in block_ids:
         target = _resolve_related(bid, tasks_list, closed_list)
-        if target is None or (target.get("status") != "done" and not target.get("closed", False)):
+        if target is None or (target.get("status") != close_status and not target.get("closed", False)):
             blockers.append({"id": bid, "task": target})
     return blockers
 
 
-def _is_task_blocked(task: dict[str, Any], tasks_list: list[dict[str, Any]], closed_list: list[dict[str, Any]]) -> bool:
-    return len(_get_blockers(task, tasks_list, closed_list)) > 0
+def _is_task_blocked(task: dict[str, Any], tasks_list: list[dict[str, Any]], closed_list: list[dict[str, Any]], close_status: str = "done") -> bool:
+    return len(_get_blockers(task, tasks_list, closed_list, close_status=close_status)) > 0
 
 
 def _collect_all_tags(tasks: list[dict[str, Any]]) -> dict[str, int]:
@@ -374,8 +388,8 @@ def _sort_overview_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return ordered
 
 
-def _overview_blocker_hint(task: dict[str, Any], tasks_list: list[dict[str, Any]], closed_list: list[dict[str, Any]]) -> str | None:
-    blockers = _get_blockers(task, tasks_list, closed_list)
+def _overview_blocker_hint(task: dict[str, Any], tasks_list: list[dict[str, Any]], closed_list: list[dict[str, Any]], close_status: str = "done") -> str | None:
+    blockers = _get_blockers(task, tasks_list, closed_list, close_status=close_status)
     if not blockers:
         return None
     blocker_ids = [str(blocker.get("id") or "?") for blocker in blockers]
@@ -387,8 +401,8 @@ def _overview_blocker_hint(task: dict[str, Any], tasks_list: list[dict[str, Any]
     return f"blocked by {preview}{suffix}"
 
 
-def _overview_task_hint(task: dict[str, Any], tasks_list: list[dict[str, Any]], closed_list: list[dict[str, Any]]) -> str:
-    blocker_hint = _overview_blocker_hint(task, tasks_list, closed_list)
+def _overview_task_hint(task: dict[str, Any], tasks_list: list[dict[str, Any]], closed_list: list[dict[str, Any]], close_status: str = "done") -> str:
+    blocker_hint = _overview_blocker_hint(task, tasks_list, closed_list, close_status=close_status)
     if blocker_hint:
         return blocker_hint
     tags = task.get("tags") or []
@@ -400,7 +414,7 @@ def _overview_task_hint(task: dict[str, Any], tasks_list: list[dict[str, Any]], 
     return "-"
 
 
-def build_overview_data(tasks: list[dict[str, Any]], closed_list: list[dict[str, Any]]) -> dict[str, Any]:
+def build_overview_data(tasks: list[dict[str, Any]], closed_list: list[dict[str, Any]], ready_status: str = "todo", close_status: str = "done") -> dict[str, Any]:
     active_tasks = [task for task in tasks if not task.get("closed", False)]
     sections: dict[str, list[dict[str, Any]]] = {
         "now": [],
@@ -412,20 +426,17 @@ def build_overview_data(tasks: list[dict[str, Any]], closed_list: list[dict[str,
 
     for task in active_tasks:
         task_view = dict(task)
-        task_view["hint"] = _overview_task_hint(task, active_tasks, closed_list)
-        status = str(task.get("status") or "")
+        task_view["hint"] = _overview_task_hint(task, active_tasks, closed_list, close_status=close_status)
         is_claimed = bool(task.get("claimed"))
-        is_blocked = _is_task_blocked(task, active_tasks, closed_list)
-        if status in {"in-progress", "review"} or is_claimed:
+        is_blocked = _is_task_blocked(task, active_tasks, closed_list, close_status=close_status)
+        if is_claimed:
             sections["now"].append(task_view)
-        elif status == "todo" and not is_blocked:
-            sections["ready"].append(task_view)
-        elif status in {"blocked", "waiting"} or (status == "todo" and is_blocked):
+        elif is_blocked:
             sections["waiting"].append(task_view)
-        elif status in {"postponed", "parked", "deferred", "backlog"}:
-            sections["parked"].append(task_view)
+        elif task.get("status") == ready_status:
+            sections["ready"].append(task_view)
         else:
-            sections["other"].append(task_view)
+            sections["parked"].append(task_view)
 
     overview = {name: _sort_overview_tasks(items) for name, items in sections.items()}
     overview["counts"] = {
@@ -460,7 +471,7 @@ def init_task_files() -> dict[str, str]:
 
     tasks_file = _tasks_file()
     if not tasks_file.exists():
-        data = {"meta": {"counter": 0}, "tasks": []}
+        data = {"meta": {"counter": 0, "config": dict(DEFAULT_TASK_CONFIG)}, "tasks": []}
         content = TASKS_HEADER + yaml.safe_dump(data, default_flow_style=False, sort_keys=False, allow_unicode=True)
         tasks_file.write_text(content, encoding="utf-8")
         results[str(tasks_file)] = "created"
@@ -517,7 +528,7 @@ def add_task(title: str, priority: int | str | None = None, tags: list[str] | No
     task: dict[str, Any] = {
         "id": task_id,
         "title": title,
-        "status": "todo",
+        "status": _ensure_config(meta).get("default_status", "todo"),
         "created": _now_date(),
         "closed": False,
     }
@@ -560,6 +571,9 @@ def update_task(task_id: str, status: str | None = None, priority: int | str | N
         raise ValueError(f"Task not found: {task_id}")
 
     if status is not None:
+        config_status = _ensure_config(meta)
+        if status not in config_status["statuses"]:
+            raise ValueError(f"Invalid status '{status}'. Valid statuses: {', '.join(config_status['statuses'])}")
         task["status"] = status
     if priority is not None:
         norm_p = _normalize_priority(priority)

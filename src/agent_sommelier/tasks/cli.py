@@ -15,6 +15,7 @@ from rich.table import Table
 
 from .core import (
     _collect_all_tags,
+    _ensure_config,
     _find_task_by_id,
     _format_id,
     _get_blockers,
@@ -39,7 +40,6 @@ from .core import (
     search_tasks,
     update_task,
     VALID_SOURCES,
-    VALID_STATUSES,
 )
 from .render import _format_priority, console, render_overview
 
@@ -107,7 +107,7 @@ def add(title: str, tags: tuple[str, ...], priority: str | None, source: str,
 
 
 @main.command("list")
-@click.option("--status", type=click.Choice(list(VALID_STATUSES)), help="Filter by status")
+@click.option("--status", type=str, default=None, help="Filter by status (must be defined in meta.config.statuses)")
 @click.option("--tag", "tags", multiple=True, help="Filter by tag (repeatable, AND logic)")
 @click.option("--tag-any", "tags_any", multiple=True, help="Filter by tag (OR logic, repeatable)")
 @click.option("--priority", help="Filter by priority (p0-p4, 0-4, or name like urgent, high)")
@@ -120,10 +120,16 @@ def list_cmd(status: str | None, tags: tuple[str, ...], tags_any: tuple[str, ...
              source: str | None, related: str | None, text: str | None,
              json_output: bool):
     try:
-        _, tasks = load_tasks_yaml()
+        meta, tasks = load_tasks_yaml()
     except FileNotFoundError as e:
         click.echo(str(e), err=True)
         sys.exit(1)
+
+    if status:
+        config = _ensure_config(meta)
+        if status not in config["statuses"]:
+            click.echo(f"Invalid status '{status}'. Valid statuses: {', '.join(config['statuses'])}", err=True)
+            sys.exit(1)
 
     tasks = [t for t in tasks if not t.get("closed", False)]
     tasks = filter_tasks(tasks, status=status,
@@ -172,12 +178,15 @@ def take(task_id: str, claimed: str):
     Safe to re-run on tasks already in-progress (does nothing but still succeeds).
     """
     try:
+        meta, _ = load_tasks_yaml()
+        config = _ensure_config(meta)
+        active_status = config.get("active_status", "in-progress")
         task = update_task(
             task_id=task_id,
-            status="in-progress",
+            status=active_status,
             claimed=claimed,
         )
-        click.echo(f"Task {task['id']} is now in-progress (claimed: {task.get('claimed', 'unset')}): {task['title']}")
+        click.echo(f"Task {task['id']} is now {active_status} (claimed: {task.get('claimed', 'unset')}): {task['title']}")
     except FileNotFoundError as e:
         click.echo(str(e), err=True)
         sys.exit(1)
@@ -195,12 +204,15 @@ def claim(task_id: str, claimed: str):
     Defaults --claimed to "agent" so the task is always locked.
     """
     try:
+        meta, _ = load_tasks_yaml()
+        config = _ensure_config(meta)
+        active_status = config.get("active_status", "in-progress")
         task = update_task(
             task_id=task_id,
-            status="in-progress",
+            status=active_status,
             claimed=claimed,
         )
-        click.echo(f"Task {task['id']} is now in-progress (claimed: {task.get('claimed', 'unset')}): {task['title']}")
+        click.echo(f"Task {task['id']} is now {active_status} (claimed: {task.get('claimed', 'unset')}): {task['title']}")
     except FileNotFoundError as e:
         click.echo(str(e), err=True)
         sys.exit(1)
@@ -294,7 +306,7 @@ def show(task_id: str):
 
 @main.command()
 @click.argument("task_id")
-@click.option("--status", type=click.Choice(list(VALID_STATUSES)), help="Change status")
+@click.option("--status", type=str, default=None, help="Change status (must be defined in meta.config.statuses)")
 @click.option("--tag", "-t", "tags", multiple=True, help="Tag(s) to append (repeatable)")
 @click.option("--priority", "-p", help="Change priority (p0-p4, 0-4, or name like urgent, high)")
 @click.option("--claimed", help="Set or clear claim (empty string clears). Claimed tasks are locked from ready/next queues.")
@@ -362,13 +374,16 @@ def close(task_id: str, note: str | None, evidence: str | None):
 def next_cmd(take: str, tag: str | None, priority: str | None,
              skip_related: bool, skip_blocks: bool):
     try:
-        _, tasks = load_tasks_yaml()
+        meta, tasks = load_tasks_yaml()
         closed_list = load_closed_yaml()
     except FileNotFoundError as e:
         click.echo(str(e), err=True)
         sys.exit(1)
 
-    candidates = [t for t in tasks if t.get("status") == "todo"]
+    config = _ensure_config(meta)
+    ready_status = config.get("ready_status", "todo")
+    close_status = config.get("close_status", "done")
+    candidates = [t for t in tasks if t.get("status") == ready_status]
     candidates = [t for t in candidates if not t.get("closed", False)]
     # Exclude claimed tasks (claimed + in-progress or just claimed)
     candidates = [t for t in candidates if not t.get("claimed")]
@@ -376,7 +391,7 @@ def next_cmd(take: str, tag: str | None, priority: str | None,
 
     skip = skip_related or skip_blocks
     if skip:
-        candidates = [t for t in candidates if not _is_task_blocked(t, tasks, closed_list)]
+        candidates = [t for t in candidates if not _is_task_blocked(t, tasks, closed_list, close_status=close_status)]
 
     candidates.sort(key=lambda t: t.get("created", ""), reverse=True)
     candidates.sort(key=_priority_sort_key)
@@ -405,44 +420,47 @@ def next_cmd(take: str, tag: str | None, priority: str | None,
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 def status(json_output: bool):
     try:
-        _, tasks = load_tasks_yaml()
+        meta, tasks = load_tasks_yaml()
     except FileNotFoundError as e:
         click.echo(str(e), err=True)
         sys.exit(1)
 
     active = [t for t in tasks if not t.get("closed", False)]
-    in_progress = [t for t in active if t.get("status") == "in-progress"]
-    todo = [t for t in active if t.get("status") == "todo"]
+    config = _ensure_config(meta)
+    active_status = config.get("active_status", "in-progress")
+    ready_status = config.get("ready_status", "todo")
+    in_column = [t for t in active if t.get("status") == active_status]
+    ready_column = [t for t in active if t.get("status") == ready_status]
 
-    top_todo = sorted(todo, key=lambda t: t.get("created", ""), reverse=True)
-    top_todo.sort(key=_priority_sort_key)
-    top_todo = top_todo[:5]
+    top_ready_column = sorted(ready_column, key=lambda t: t.get("created", ""), reverse=True)
+    top_ready_column.sort(key=_priority_sort_key)
+    top_ready_column = top_ready_column[:5]
 
     tag_counts = _collect_all_tags(active)
     inbox_count = _inbox_line_count()
 
     if json_output:
         output = {
-            "counts": {"todo": len(todo), "in_progress": len(in_progress)},
-            "in_progress": in_progress,
-            "top_priority": top_todo,
+            "counts": {ready_status: len(ready_column), active_status: len(in_column)},
+            active_status: in_column,
+            "top_priority": top_ready_column,
             "tags": tag_counts,
             "inbox_entries": inbox_count,
         }
         click.echo(json.dumps(output, indent=2))
         return
 
-    click.echo(f"\nTasks: {len(in_progress)} in-progress, {len(todo)} todo")
+    click.echo(f"\nTasks: {len(in_column)} {active_status}, {len(ready_column)} {ready_status}")
 
-    if in_progress:
-        click.echo("\nIN PROGRESS")
-        for t in in_progress:
+    if in_column:
+        click.echo(f"\n{active_status.upper()}")
+        for t in in_column:
             tags_str = ", ".join(t.get("tags", []) or [])
             click.echo(f"  [{t.get('id')}] {_format_priority(t.get('priority')):4s}  {t.get('title')}  tags: {tags_str}")
 
-    if top_todo:
+    if top_ready_column:
         click.echo("\nTOP PRIORITY")
-        for t in top_todo:
+        for t in top_ready_column:
             tags_str = ", ".join(t.get("tags", []) or [])
             click.echo(f"  [{t.get('id')}] {_format_priority(t.get('priority')):4s}  {t.get('title')}  tags: {tags_str}")
     else:
@@ -461,13 +479,16 @@ def status(json_output: bool):
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 def overview(json_output: bool):
     try:
-        _, tasks = load_tasks_yaml()
+        meta, tasks = load_tasks_yaml()
         closed_list = load_closed_yaml()
     except FileNotFoundError as e:
         click.echo(str(e), err=True)
         sys.exit(1)
 
-    overview_data = build_overview_data(tasks, closed_list)
+    config = _ensure_config(meta)
+    ready_status = config.get("ready_status", "todo")
+    close_status = config.get("close_status", "done")
+    overview_data = build_overview_data(tasks, closed_list, ready_status=ready_status, close_status=close_status)
 
     if json_output:
         click.echo(json.dumps(overview_data, indent=2))
@@ -675,13 +696,16 @@ def deps(task_id: str):
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 def ready(take: str, tag: str | None, json_output: bool):
     try:
-        _, tasks = load_tasks_yaml()
+        meta, tasks = load_tasks_yaml()
         closed_list = load_closed_yaml()
     except FileNotFoundError as e:
         click.echo(str(e), err=True)
         sys.exit(1)
 
-    candidates = [t for t in tasks if t.get("status") == "todo" and not t.get("closed", False) and not _is_task_blocked(t, tasks, closed_list) and not t.get("claimed")]
+    config = _ensure_config(meta)
+    ready_status = config.get("ready_status", "todo")
+    close_status = config.get("close_status", "done")
+    candidates = [t for t in tasks if t.get("status") == ready_status and not t.get("closed", False) and not _is_task_blocked(t, tasks, closed_list, close_status=close_status) and not t.get("claimed")]
 
     if tag:
         candidates = [t for t in candidates if tag in (t.get("tags") or [])]
@@ -719,18 +743,20 @@ def ready(take: str, tag: str | None, json_output: bool):
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 def blocked(json_output: bool):
     try:
-        _, tasks = load_tasks_yaml()
+        meta, tasks = load_tasks_yaml()
         closed_list = load_closed_yaml()
     except FileNotFoundError as e:
         click.echo(str(e), err=True)
         sys.exit(1)
 
-    candidates = [t for t in tasks if not t.get("closed", False) and _is_task_blocked(t, tasks, closed_list)]
+    config = _ensure_config(meta)
+    close_status = config.get("close_status", "done")
+    candidates = [t for t in tasks if not t.get("closed", False) and _is_task_blocked(t, tasks, closed_list, close_status=close_status)]
 
     if json_output:
         output = []
         for t in candidates:
-            blockers = _get_blockers(t, tasks, closed_list)
+            blockers = _get_blockers(t, tasks, closed_list, close_status=close_status)
             entry = dict(t)
             entry["blockers"] = [
                 {"id": b["id"], "status": b["task"].get("status") if b["task"] else "not_found",
@@ -747,7 +773,7 @@ def blocked(json_output: bool):
 
     click.echo(f"\nBLOCKED ({len(candidates)}):")
     for t in candidates:
-        blockers = _get_blockers(t, tasks, closed_list)
+        blockers = _get_blockers(t, tasks, closed_list, close_status=close_status)
         tags_str = ", ".join(t.get("tags", []) or [])
         click.echo(f"\n  [{t.get('id')}] {_format_priority(t.get('priority')):4s} {t.get('title')}  tags: {tags_str}")
         for b in blockers:

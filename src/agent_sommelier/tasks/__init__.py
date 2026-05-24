@@ -18,7 +18,6 @@ from .core import (  # noqa: F401
     VALID_DEP_TYPES,
     VALID_PRIORITIES,
     VALID_SOURCES,
-    VALID_STATUSES,
     _append_text_field,
     _collect_all_tags,
     _ensure_deps_field,

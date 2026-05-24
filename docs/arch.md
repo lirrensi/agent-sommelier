@@ -454,13 +454,63 @@ tasks = "agent_sommelier.tasks:main"
 
 The task system is static and file-based. `tasks.yaml` is the active source of truth, `closed.yaml` is the archive, and the inbox is deliberately free-form intake. Statuses, priorities, dependencies, notes, evidence, and the optional `claimed` / `createdBy` fields are all persisted in YAML so the repo can carry work across sessions.
 
+### Config-Driven Status Model
+
+Status names are **not hardcoded** in the source. They live in `tasks.yaml` under `meta.config`:
+
+```yaml
+meta:
+  config:
+    statuses: [backlog, todo, in-progress, review, done, cancelled]
+    default_status: todo
+    ready_status: todo
+    active_status: in-progress
+    close_status: done
+```
+
+The `VALID_STATUSES` constant no longer exists. Five config keys drive all status-dependent behavior:
+
+- **`statuses`** — valid names for validation (used by `--status` on `list` / `update`)
+- **`default_status`** — used by `core.add_task()` when no `--status` is given
+- **`ready_status`** — queue filter for `tasks next` / `tasks ready`
+- **`active_status`** — target status for `tasks take` / `tasks claim`
+- **`close_status`** — status assigned before archive by `tasks close`
+
+When `meta.config` is absent, defaults are injected on load (see `spec.md` for the default values). `tasks init` always writes the default config.
+
+### Overview Section Logic (replaces old status-based grouping)
+
+| Section | Inclusion rule |
+|---|---|
+| **now** | Non-empty `claimed` (any status) |
+| **ready** | `status == config.ready_status`, not claimed, not blocked by deps |
+| **waiting** | Blocked by unresolved `blocks`-type dependencies (any status) |
+| **parked** | Everything else |
+
+The old hardcoded mapping (`in-progress`/`review` → now, `todo` → ready, `blocked`/`waiting` → waiting, `postponed`/`parked`/`deferred`/`backlog` → parked) is gone. Only the config keys + dependency math drive sections.
+
+### How the Config Flows Through the Code
+
+```
+load_tasks_yaml()
+    └─ extracts meta.config or injects defaults
+    └─ returns merged config alongside task list
+
+add_task(config)        ── uses config.default_status
+update_task(status)     ── validates against config.statuses
+take/claim(cli)         ── uses config.active_status
+next/ready(queue)       ── filters by config.ready_status
+close(cli)              ── uses config.close_status
+build_overview_data()   ── references config.ready_status only
+```
+
 ### Behavior Notes
 
-- `tasks next` and `tasks ready` are queue views over `todo` work
+- `tasks next` and `tasks ready` are queue views over the `ready_status` column
 - typed deps include `blocks`, `parent`, `child`, `discovered`, and `relates`
-- `blocks` drives readiness and blocked-state reporting
+- `blocks` drives readiness and blocked-state reporting; other types are informational
 - `tasks overview` uses overview-specific Rich section rendering for a vertical dashboard-like view without adding interactivity
-- `tasks take` and `tasks claim` are shorthands for `tasks update --status in-progress --claimed agent`; they accept an optional `--claimed` flag but otherwise perform no additional side effects
+- `tasks take` and `tasks claim` are shorthands for `tasks update --status active_status --claimed agent`; they accept an optional `--claimed` flag but otherwise perform no additional side effects
 - `tasks update` can change status, tags, priority, deps, notes, evidence, closure, and the optional `claimed` / `createdBy` fields in one pass
 - `tasks history` and `tasks search` make the archive useful, not just hidden
 

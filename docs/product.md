@@ -418,14 +418,46 @@ Static, file-backed task tracking for project work. Lives in `.agents/tasks/` wi
 
 **Use it for:** capturing work, tracking dependencies, finding the next unblocked task, and keeping the archive of completed work visible.
 
-Tasks can also carry `notes` and `evidence` as appendable string lists; `evidence` is the quick verification trail for later re-checks.
+Tasks also carry `notes` and `evidence` as appendable string lists, plus optional identity fields:
 
-Two optional identity fields:
+- **`claimed`** — who is actively working this task. When non-empty, the task is locked and excluded from `next`/`ready` queues.
+- **`createdBy`** — who or what created the task (metadata only).
 
-- **`claimed`** — who is actively working on this task. When non-empty, the task is locked and excluded from `next`/`ready` queues. Set via `--claimed` on `add`, `take`, `claim`, or `update`. Clear via `--claimed ""`.
-- **`createdBy`** — who or what created the task. Pure metadata for distinguishing manual vs automated creation. Set via `--created-by` on `add` or `update`.
+### Statuses Are Config-Driven
 
-`tasks take TSK-NNNN` is a shorthand for claiming and starting work — equivalent to `tasks update TSK-NNNN --status in-progress --claimed agent`. Defaults `claimed` to `"agent"` if no `--claimed` flag is passed. `tasks claim` is an alias for `tasks take`. Both are idempotent: safe to re-run if already in-progress.
+Statuses are not hardcoded — they're defined in the `meta.config` block at the top of `tasks.yaml`. You can rename, reorder, add, or remove statuses freely. The system uses a few config keys to drive queue behavior:
+
+| Key | Purpose | Default |
+|---|---|---|
+| `statuses` | Complete list of valid status names | `[todo, in-progress, done, ...]` |
+| `default_status` | Where `tasks add` puts new tasks | `todo` |
+| `ready_status` | Which column `tasks next` / `tasks ready` pull from | `todo` |
+| `active_status` | Where `tasks take` / `tasks claim` move the card | `in-progress` |
+| `close_status` | Which status `tasks close` sets before archiving | `done` |
+
+Example:
+```yaml
+# .agents/tasks/tasks.yaml
+meta:
+  config:
+    statuses: [backlog, todo, in-progress, review, done, cancelled]
+    default_status: todo
+    ready_status: todo
+    active_status: in-progress
+    close_status: done
+```
+
+If no config exists, defaults are injected silently — existing files work untouched.
+
+### How Status Drives Behavior
+
+- **`tasks add`** → status = `default_status`, not claimed
+- **`tasks take` / `tasks claim`** → claimed = `"agent"`, moves to `active_status`
+- **`tasks next` / `tasks ready`** → only shows tasks matching `ready_status`, unclaimed, unblocked
+- **`tasks close`** → sets `close_status`, then archives to `closed.yaml`
+- **Overview (now/ready/waiting/parked)** → driven by claimed flag + config keys + dependency blocking
+
+A status is just a column name. Move the card, change the status. Everything else (blocked, blocked-by-deps, etc.) is orthogonal.
 
 ---
 
