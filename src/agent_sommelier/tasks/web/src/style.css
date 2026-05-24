@@ -1,0 +1,341 @@
+/* FILE: src/agent_sommelier/web/src/style.css */
+/* PURPOSE: Dark-themed UI styles for the real-time task dashboard. */
+/* OWNS: Visual design, layout, responsive grid, priority colors, animations. */
+/* EXPORTS: (none — imported by index.html) */
+/* DOCS: .agents/reports/plan_web_ui_2026-05-24.md */
+
+/* ─── Reset & Base ─── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: 14px;
+}
+
+body {
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background: #0f1117;
+  color: #e1e4e8;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ─── Status Bar ─── */
+.status-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.6rem 1.2rem;
+  border-bottom: 1px solid #2d2f36;
+  background: #161922;
+  transition: background 0.3s ease;
+  font-size: 0.85rem;
+  flex-shrink: 0;
+}
+
+.status-bar.connected {
+  background: #162220;
+}
+
+.status-bar.disconnected {
+  background: #221a16;
+}
+
+.status-left,
+.status-right {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+/* ─── Dot (connection indicator) ─── */
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #555;
+}
+
+.dot.live {
+  background: #3fb950;
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+.dot.dead {
+  background: #da3633;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ─── Dashboard Grid ─── */
+.dashboard {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  padding: 1rem;
+  flex: 1;
+  overflow-y: auto;
+}
+
+@media (max-width: 799px) {
+  .dashboard {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ─── Section ─── */
+.section {
+  background: #1a1d27;
+  border-radius: 10px;
+  padding: 1rem;
+  border: 1px solid #2d2f36;
+}
+
+.section h2 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+  color: #c9d1d9;
+}
+
+/* ─── Badge ─── */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #2d2f36;
+  color: #8b949e;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.1rem 0.5rem;
+  border-radius: 10px;
+  min-width: 1.4rem;
+}
+
+/* ─── Card List ─── */
+.card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/* ─── Task Card ─── */
+.task-card {
+  background: #21242d;
+  border-radius: 8px;
+  padding: 0.7rem 0.9rem;
+  border-left: 3px solid #3b3d45;
+  transition: opacity 0.2s ease, transform 0.15s ease;
+}
+
+.task-card:hover {
+  transform: translateY(-1px);
+}
+
+/* Priority colors */
+.task-card.p0 { border-left-color: #da3633; }
+.task-card.p1 { border-left-color: #d29922; }
+.task-card.p2 { border-left-color: #58a6ff; }
+.task-card.p3 { border-left-color: #484f58; }
+.task-card.p4 { border-left-color: #30313a; border-left-width: 2px; }
+
+/* Modifiers */
+.task-card.blocked {
+  opacity: 0.7;
+  border-left-color: #d29922;
+}
+
+.task-card.dim {
+  opacity: 0.6;
+}
+
+/* ─── Card Header ─── */
+.card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  margin-bottom: 0.3rem;
+}
+
+.card-header .id {
+  color: #58a6ff;
+  font-weight: 600;
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+}
+
+.card-header .priority {
+  color: #8b949e;
+  font-size: 0.7rem;
+}
+
+/* ─── Card Title ─── */
+.card-title {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #e1e4e8;
+  margin-bottom: 0.3rem;
+  line-height: 1.3;
+}
+
+/* ─── Card Tags ─── */
+.card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.2rem;
+}
+
+.tag {
+  display: inline-block;
+  background: #2d2f36;
+  color: #8b949e;
+  font-size: 0.7rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 4px;
+}
+
+.status-tag {
+  background: #1f3a3f;
+  color: #7ee787;
+  font-weight: 500;
+}
+
+.card-hint {
+  font-size: 0.75rem;
+  color: #8b949e;
+  margin-top: 0.2rem;
+}
+
+/* ─── Buttons ─── */
+.btn-take {
+  margin-left: auto;
+  background: #238636;
+  color: #fff;
+  border: none;
+  border-radius: 5px;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.btn-take:hover {
+  background: #2ea043;
+}
+
+.btn-icon {
+  margin-left: auto;
+  background: transparent;
+  color: #6e7681;
+  border: none;
+  border-radius: 4px;
+  padding: 0.15rem 0.35rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.btn-icon:hover {
+  background: #2d2f36;
+  color: #da3633;
+}
+
+/* ─── Empty State ─── */
+.empty {
+  text-align: center;
+  padding: 1.5rem 0;
+  color: #484f58;
+  font-size: 0.85rem;
+}
+
+/* ─── Add Bar ─── */
+.add-bar {
+  position: sticky;
+  bottom: 0;
+  background: #161922;
+  border-top: 1px solid #2d2f36;
+  padding: 0.7rem 1.2rem;
+  flex-shrink: 0;
+}
+
+.add-bar form {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.add-bar input,
+.add-bar select,
+.add-bar button {
+  font-family: inherit;
+  font-size: 0.85rem;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid #2d2f36;
+  border-radius: 6px;
+  background: #21242d;
+  color: #e1e4e8;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.add-bar input:focus,
+.add-bar select:focus {
+  border-color: #58a6ff;
+}
+
+.input-title {
+  flex: 1;
+  min-width: 120px;
+}
+
+.input-priority {
+  width: 60px;
+}
+
+.input-tags {
+  width: 120px;
+}
+
+.btn-add {
+  background: #238636;
+  color: #fff;
+  border: none;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.btn-add:hover {
+  background: #2ea043;
+}
+
+/* ─── Scrollbar ─── */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0f1117;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2d2f36;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #484f58;
+}

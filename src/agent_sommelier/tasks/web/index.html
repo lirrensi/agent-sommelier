@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tasks — Real-Time Dashboard</title>
+  <link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+  <div id="app" x-data>
+    <!-- Status bar -->
+    <header class="status-bar" :class="$store.tasks.connected ? 'connected' : 'disconnected'">
+      <div class="status-left">
+        <span class="dot" :class="$store.tasks.connected ? 'live' : 'dead'"></span>
+        <span x-text="$store.tasks.connected ? 'Connected' : 'Reconnecting...'"></span>
+      </div>
+      <div class="status-right">
+        <span x-text="'📋 ' + ($store.tasks.overview?.counts.active ?? 0) + ' active'"></span>
+        <span x-text="'📥 ' + ($store.tasks.overview?.counts.ready ?? 0) + ' ready'"></span>
+      </div>
+    </header>
+
+    <!-- Dashboard Grid -->
+    <main class="dashboard">
+      <!-- Section: Now -->
+      <section class="section">
+        <h2>Now <span class="badge" x-text="$store.tasks.overview?.counts.now ?? 0"></span></h2>
+        <div class="card-list">
+          <template x-for="task in $store.tasks.overview?.now || []" :key="task.id">
+            <div class="task-card" :class="'p' + (task.priority ?? 4)">
+              <div class="card-header">
+                <span class="id" x-text="task.id"></span>
+                <span class="priority" x-text="'p' + (task.priority ?? 4)"></span>
+                <span class="tag status-tag" x-text="task.status"></span>
+                <button class="btn-icon" @click="$store.tasks.closeTask(task.id)" title="Close">✕</button>
+              </div>
+              <div class="card-title" x-text="task.title"></div>
+              <div class="card-tags" x-show="task.tags?.length">
+                <span class="tag" x-for="tag in task.tags ?? []" x-text="tag"></span>
+              </div>
+              <div class="card-hint" x-show="task.hint" x-text="task.hint"></div>
+            </div>
+          </template>
+          <div class="empty" x-show="!($store.tasks.overview?.counts.now ?? 0)">No active work</div>
+        </div>
+      </section>
+
+      <!-- Section: Ready -->
+      <section class="section">
+        <h2>Ready <span class="badge" x-text="$store.tasks.overview?.counts.ready ?? 0"></span></h2>
+        <div class="card-list">
+          <template x-for="task in $store.tasks.overview?.ready || []" :key="task.id">
+            <div class="task-card" :class="'p' + (task.priority ?? 4)">
+              <div class="card-header">
+                <span class="id" x-text="task.id"></span>
+                <span class="priority" x-text="'p' + (task.priority ?? 4)"></span>
+                <button class="btn-take" @click="$store.tasks.takeTask(task.id)">Take</button>
+              </div>
+              <div class="card-title" x-text="task.title"></div>
+              <div class="card-tags" x-show="task.tags?.length">
+                <span class="tag" x-for="tag in task.tags ?? []" x-text="tag"></span>
+              </div>
+            </div>
+          </template>
+          <div class="empty" x-show="!($store.tasks.overview?.counts.ready ?? 0)">No ready tasks</div>
+        </div>
+      </section>
+
+      <!-- Section: Waiting -->
+      <section class="section">
+        <h2>Waiting <span class="badge" x-text="$store.tasks.overview?.counts.waiting ?? 0"></span></h2>
+        <div class="card-list">
+          <template x-for="task in $store.tasks.overview?.waiting || []" :key="task.id">
+            <div class="task-card blocked" :class="'p' + (task.priority ?? 4)">
+              <div class="card-header">
+                <span class="id" x-text="task.id"></span>
+                <span class="priority" x-text="'p' + (task.priority ?? 4)"></span>
+                <span class="tag status-tag" x-text="task.status"></span>
+              </div>
+              <div class="card-title" x-text="task.title"></div>
+              <div class="card-hint" x-show="task.hint" x-text="'⏳ ' + task.hint"></div>
+            </div>
+          </template>
+          <div class="empty" x-show="!($store.tasks.overview?.counts.waiting ?? 0)">No blocked tasks</div>
+        </div>
+      </section>
+
+      <!-- Section: Parked -->
+      <section class="section">
+        <h2>Parked <span class="badge" x-text="$store.tasks.overview?.counts.parked ?? 0"></span></h2>
+        <div class="card-list">
+          <template x-for="task in $store.tasks.overview?.parked || []" :key="task.id">
+            <div class="task-card dim" :class="'p' + (task.priority ?? 4)">
+              <div class="card-header">
+                <span class="id" x-text="task.id"></span>
+                <span class="priority" x-text="'p' + (task.priority ?? 4)"></span>
+                <span class="tag status-tag" x-text="task.status"></span>
+              </div>
+              <div class="card-title" x-text="task.title"></div>
+            </div>
+          </template>
+          <div class="empty" x-show="!($store.tasks.overview?.counts.parked ?? 0)">No parked tasks</div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Add Task Form -->
+    <footer class="add-bar">
+      <form @submit.prevent="$store.tasks.addTask(title, priority, tagInput)">
+        <input type="text" x-model="title" placeholder="Task title..." class="input-title" required>
+        <select x-model="priority" class="input-priority">
+          <option value="0">P0</option>
+          <option value="1">P1</option>
+          <option value="2" selected>P2</option>
+          <option value="3">P3</option>
+          <option value="4">P4</option>
+        </select>
+        <input type="text" x-model="tagInput" placeholder="tags (comma)" class="input-tags">
+        <button type="submit" class="btn-add">+ Add</button>
+      </form>
+    </footer>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

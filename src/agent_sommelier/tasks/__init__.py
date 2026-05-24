@@ -20,6 +20,7 @@ from .core import (  # noqa: F401
     VALID_SOURCES,
     _append_text_field,
     _collect_all_tags,
+    _ensure_config,
     _ensure_deps_field,
     _ensure_deps_normalized,
     _find_task_by_id,
@@ -51,11 +52,20 @@ from .core import (  # noqa: F401
     load_closed_yaml,
     load_inbox,
     load_tasks_yaml,
+    migrate_to_perfile,
     next_counter_and_id,
     save_closed_yaml,
     save_tasks_yaml,
     search_tasks,
+    set_storage,
     update_task,
+)
+from .storage import (  # noqa: F401
+    STORAGE_VERSION,
+    TaskStorage,
+    MonolithicYamlStorage,
+    PerFileYamlStorage,
+    detect_storage_version,
 )
 from .cli import main  # noqa: F401
 from .render import _format_priority, console  # noqa: F401

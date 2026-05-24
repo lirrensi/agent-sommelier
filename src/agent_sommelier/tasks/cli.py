@@ -7,7 +7,10 @@
 from __future__ import annotations
 
 import json
+import socket
 import sys
+import webbrowser
+from pathlib import Path
 from typing import Any
 
 import click
@@ -34,6 +37,7 @@ from .core import (
     load_closed_yaml,
     load_inbox,
     load_tasks_yaml,
+    migrate_to_perfile,
     next_counter_and_id,
     save_closed_yaml,
     save_tasks_yaml,
@@ -41,6 +45,7 @@ from .core import (
     update_task,
     VALID_SOURCES,
 )
+from .storage import STORAGE_VERSION, detect_storage_version
 from .render import _format_priority, console, render_overview
 
 
@@ -54,16 +59,30 @@ def main():
 def init():
     """Bootstrap task files in the current directory. Safe to run repeatedly."""
     results = init_task_files()
-    for path, action in results.items():
+    had_created = False
+    for key, action in results.items():
         if action == "created":
-            click.echo(f"  Created {path}")
+            click.echo(f"  Created {key}")
+            had_created = True
         elif action == "invalid":
-            click.echo(f"  Error: {path} exists but is invalid YAML. Delete it and re-run.", err=True)
+            click.echo(f"  Error: {key} exists but is invalid YAML. Delete it and re-run.", err=True)
+            sys.exit(1)
+        elif action == "corrupt":
+            click.echo(f"  Error: {key} is corrupt. Delete it and re-run.", err=True)
+            sys.exit(1)
+        elif "created" in action:
+            had_created = True
+        elif "corrupt" in action:
+            click.echo(f"  Error: {key} is corrupt. Delete it and re-run.", err=True)
             sys.exit(1)
 
-    if all(v == "exists" for v in results.values()):
+    all_exist = all(
+        "exists" in v or v == "exists"
+        for v in results.values()
+    )
+    if all_exist:
         click.echo("All files already exist. Nothing to do.")
-    elif any(v == "created" for v in results.values()):
+    elif had_created:
         click.echo("Task system initialized.")
 
 
@@ -783,6 +802,71 @@ def blocked(json_output: bool):
             else:
                 click.echo(f"    ⛔ blocked by {b['id']} (not found)")
     click.echo("")
+
+
+@main.command()
+@click.option("--dry-run", is_flag=True, help="Show what would be migrated without writing")
+@click.pass_context
+def migrate(ctx: click.Context, dry_run: bool) -> None:
+    """Migrate storage from monolithic YAML to per-task YAML files.
+
+    After migration, each task gets its own TSK-xxxx.yaml file.
+    The old tasks.yaml and closed.yaml are backed up with .bak extension.
+    """
+    tasks_dir = Path.cwd() / ".agents" / "tasks"
+    version = detect_storage_version(tasks_dir)
+
+    if version == STORAGE_VERSION:
+        click.echo(f"Storage is already at version {STORAGE_VERSION} (per-file). Nothing to migrate.")
+        return
+
+    if dry_run:
+        try:
+            meta, tasks = load_tasks_yaml()
+            closed = load_closed_yaml()
+        except FileNotFoundError:
+            click.echo("No tasks found. Nothing to migrate.")
+            return
+        click.echo("Detected: monolithic storage (version 1)")
+        click.echo(f"  Active tasks: {len(tasks)}")
+        click.echo(f"  Closed tasks: {len(closed)}")
+        click.echo(f"Would migrate to: per-file storage (version {STORAGE_VERSION})")
+        return
+
+    result = migrate_to_perfile()
+    click.echo(f"Migrated {result['migrated']} tasks ({result['active']} active, {result['closed']} closed)")
+    click.echo(f"Backend switched to: {result['to']}")
+
+
+@main.command()
+@click.option("--port", type=int, default=0, help="Port to bind (0 = random free port)")
+@click.option("--no-browser", is_flag=True, help="Don't open browser automatically")
+def serve(port: int, no_browser: bool) -> None:
+    """Start the web UI dashboard for real-time task management.
+
+    Launches a local web server on a random port (or the specified port).
+    Opens the browser automatically. Press Ctrl+C to stop.
+
+    The dashboard shows overview sections (Now, Ready, Waiting, Parked)
+    and supports adding, taking, updating, and closing tasks in real time.
+    Multiple instances can run in different directories simultaneously.
+    """
+    import uvicorn
+
+    if port == 0:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("", 0))
+            port = s.getsockname()[1]
+
+    url = f"http://localhost:{port}"
+    click.echo(f"📋 Task dashboard starting at {url}")
+    click.echo("Press Ctrl+C to stop.")
+
+    if not no_browser:
+        webbrowser.open(url)
+
+    from agent_sommelier.tasks.web.app import app
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
 
 
 if __name__ == "__main__":

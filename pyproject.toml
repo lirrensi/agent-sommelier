@@ -26,8 +26,13 @@ screenshot = [
     "mss>=9.0.0",
     "pillow>=10.0.0",
 ]
+web = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "watchfiles>=1.0.0",
+]
 all = [
-    "agent-sommelier-cli[crony,screenshot]",
+    "agent-sommelier-cli[crony,screenshot,web]",
 ]
 
 [project.scripts]
@@ -44,4 +49,5 @@ packages = ["src/agent_sommelier"]
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
+    "agent-sommelier-cli[web]",
 ]

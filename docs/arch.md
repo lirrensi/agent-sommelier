@@ -18,6 +18,7 @@ agent-sommelier/
 │       ├── __init__.py
 │       ├── cli.py
 │       ├── core.py
+│       ├── storage.py
 │       └── render.py
 ├── skills/                  # Agent skills for self-install
 │   ├── bg-jobs/SKILL.md
@@ -44,7 +45,7 @@ All tools use **Click** (`click >= 8.1.0`) for CLI argument parsing and command 
 
 ### Storage Pattern
 - **JSON files** for structured data (jobs, metadata)
-- **YAML files** for repo-local task state (`.agents/tasks/tasks.yaml`, `.agents/tasks/closed.yaml`)
+- **YAML files** for repo-local task state (`.agents/tasks/` — per-task files via pluggable storage backend)
 - **Temp directories** for transient data (screenshots, bg job output)
 - **Home directory** (`~`) for persistent config (`.crony/`)
 
@@ -421,7 +422,8 @@ tasks = "agent_sommelier.tasks:main"
 ```
 
 ### Module Split
-- `core.py` — YAML storage, migrations, CRUD, search, dependency math
+- `storage.py` — `TaskStorage` ABC with `MonolithicYamlStorage` (v1, migration source) and `PerFileYamlStorage` (v2, default)
+- `core.py` — CRUD, search, dependency math, storage-aware load/save, migration orchestration
 - `render.py` — Rich console/table helpers, priority formatting, and overview section rendering
 - `cli.py` — Click group and command wiring
 
@@ -443,16 +445,45 @@ tasks = "agent_sommelier.tasks:main"
 - `tasks search` — Full-text search across active + closed tasks
 - `tasks inbox` — Read the free-form inbox
 
-### Storage
+### Storage Layer
+
+Task persistence is abstracted behind a pluggable `TaskStorage` interface in `storage.py`:
+
+| Component | Backend | File Layout | Status |
+|---|---|---|---|
+| `MonolithicYamlStorage` | Single `tasks.yaml` + `closed.yaml` | Legacy (v1) | Migration source |
+| `PerFileYamlStorage` | One `TSK-xxxx.yaml` per task + `meta.yaml` | Current (v2) | Default |
+
+**Detection:** `detect_storage_version()` checks for `meta.yaml` (v2) or `tasks.yaml` (v1).
+
+**Migration:** `migrate_to_perfile()` reads from monolithic, writes per-task files, backs up old files, and switches the active backend.
+
+### File Layout (current)
 
 ```
 .agents/tasks/
-├── inbox.md      # Free-form scratchpad for ideas and intake
-├── tasks.yaml    # Active task list and metadata
-└── closed.yaml   # Append-only closed archive
+├── inbox.md           # Free-form scratchpad for ideas and intake
+├── meta.yaml           # version, counter, config
+├── TSK-0001.yaml       # Active task (closed: false)
+├── TSK-0002.yaml       # Active task
+└── TSK-0010.yaml       # Closed task (closed: true)
 ```
 
-The task system is static and file-based. `tasks.yaml` is the active source of truth, `closed.yaml` is the archive, and the inbox is deliberately free-form intake. Statuses, priorities, dependencies, notes, evidence, and the optional `claimed` / `createdBy` fields are all persisted in YAML so the repo can carry work across sessions.
+`meta.yaml`:
+```yaml
+version: 2
+counter: 42
+config:
+  statuses: [todo, in-progress, done, blocked, ...]
+  default_status: todo
+  ready_status: todo
+  active_status: in-progress
+  close_status: done
+```
+
+Each task file is a standalone YAML dict. A closed task stays in the same file with `closed: true` added — there is no separate archive file.
+
+The inbox is deliberately free-form intake. Statuses, priorities, dependencies, notes, evidence, and the optional `claimed` / `createdBy` fields are all persisted in YAML so the repo can carry work across sessions.
 
 ### Config-Driven Status Model
 
