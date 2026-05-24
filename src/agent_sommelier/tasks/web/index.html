@@ -17,6 +17,7 @@
       <div class="status-right">
         <span x-text="'📋 ' + ($store.tasks.overview?.counts.active ?? 0) + ' active'"></span>
         <span x-text="'📥 ' + ($store.tasks.overview?.counts.ready ?? 0) + ' ready'"></span>
+        <span x-text="'✅ ' + ($store.tasks.overview?.counts.done ?? 0) + ' done'"></span>
       </div>
     </header>
 
@@ -102,11 +103,30 @@
           <div class="empty" x-show="!($store.tasks.overview?.counts.parked ?? 0)">No parked tasks</div>
         </div>
       </section>
+
+      <!-- Section: Done -->
+      <section class="section section-done">
+        <h2>Done <span class="badge" x-text="$store.tasks.overview?.counts.done ?? 0"></span></h2>
+        <div class="card-list">
+          <template x-for="task in $store.tasks.overview?.done || []" :key="task.id">
+            <div class="task-card done-card" :class="'p' + (task.priority ?? 4)">
+              <div class="card-header">
+                <span class="id" x-text="task.id"></span>
+                <span class="priority" x-text="'p' + (task.priority ?? 4)"></span>
+                <span class="tag status-tag done-status" x-text="task.status"></span>
+              </div>
+              <div class="card-title" x-text="task.title"></div>
+              <div class="card-date" x-text="(task.closed_at ?? task.completed ?? task.created ?? '').slice(0, 10)"></div>
+            </div>
+          </template>
+          <div class="empty" x-show="!($store.tasks.overview?.counts.done ?? 0)">No completed tasks</div>
+        </div>
+      </section>
     </main>
 
     <!-- Add Task Form -->
-    <footer class="add-bar">
-      <form @submit.prevent="$store.tasks.addTask(title, priority, tagInput)">
+    <footer class="add-bar" x-data="{ title: '', priority: 2, tagInput: '' }">
+      <form @submit.prevent="title = title.trim(); if (title) { $store.tasks.addTask(title, priority, tagInput); title = ''; tagInput = ''; priority = 2 }">
         <input type="text" x-model="title" placeholder="Task title..." class="input-title" required>
         <select x-model="priority" class="input-priority">
           <option value="0">P0</option>

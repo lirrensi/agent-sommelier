@@ -25,6 +25,7 @@ export interface OverviewSections {
   ready: Task[]
   waiting: Task[]
   parked: Task[]
+  done: Task[]
 }
 
 export interface Overview {
@@ -32,12 +33,14 @@ export interface Overview {
   ready: Task[]
   waiting: Task[]
   parked: Task[]
+  done: Task[]
   counts: {
     active: number
     now: number
     ready: number
     waiting: number
     parked: number
+    done: number
   }
 }
 

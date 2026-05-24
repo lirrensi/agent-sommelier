@@ -45,6 +45,15 @@ def _build_overview() -> dict[str, Any]:
         ready_status=ready_status,
         close_status=close_status,
     )
+    # Add done/closed section for the web dashboard
+    done_tasks = []
+    for t in closed_list:
+        task_view = dict(t)
+        task_view["hint"] = None
+        done_tasks.append(task_view)
+    done_tasks.sort(key=lambda t: t.get("closed_at", t.get("completed", t.get("created", ""))), reverse=True)
+    overview_data["done"] = done_tasks
+    overview_data["counts"]["done"] = len(done_tasks)
     return overview_data
 
 
