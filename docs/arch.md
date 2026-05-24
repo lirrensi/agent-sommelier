@@ -14,11 +14,15 @@ agent-sommelier/
 │   ├── bg.py                # Background job manager
 │   ├── crony.py             # Cron job scheduler
 │   ├── screenshot.py        # Screen capture
+│   ├── skill_store/          # Skill registry (CLI + MCP)
+│   │   ├── __init__.py
+│   │   ├── core.py
+│   │   ├── cli.py
+│   │   └── mcp.py
 │   └── tasks/               # In-repo task management package
 │       ├── __init__.py
 │       ├── cli.py
 │       ├── core.py
-│       ├── storage.py
 │       └── render.py
 ├── skills/                  # Agent skills for self-install
 │   ├── bg-jobs/SKILL.md
@@ -549,26 +553,88 @@ build_overview_data()   ── references config.ready_status only
 
 ## Component: skill_store
 
-### File
-`src/agent_sommelier/skill_store.py`
+### Module Split
+The skill store has been refactored into a package with three layers:
 
-### Entry Point
-```python
-skill-store = "agent_sommelier.skill_store:main"
+```
+src/agent_sommelier/skill_store/
+├── __init__.py      # Re-exports main() from cli for backward compat
+├── core.py          # Pure data logic (index, search, validation, parsing)
+├── cli.py           # Click CLI commands
+└── mcp.py           # FastMCP server with 4 tools
 ```
 
-### Purpose
-CLI for the local skill registry. It supports browsing, searching, loading, pinning, and syncing skill entries stored on disk so agents can keep context small while still discovering tools on demand.
+### core.py — Data Layer
+
+**Purpose:** Pure functions with no Click or Rich console coupling. Used by both CLI and MCP entry points.
+
+**Location:** `src/agent_sommelier/skill_store/core.py`
+
+**Exports:**
+- Path resolution: `resolve_store_path()`, `ensure_store_initialized()`
+- Index CRUD: `load_index()`, `save_index()`, `find_skill()`
+- Parsing: `parse_skill_frontmatter()`, `validate_slug()`
+- Search: `rg_available()`, `rg_search_json()`
+- File ops: `process_skill_file()`, `git_run()`, `git_auto_commit()`
+- Display helpers: `clean_desc()`, `display_skills_list()`, `build_tree_lines()`, `e()`
+- Group helpers: `group_exists()`, `get_group()`, `validate_group_slug()`
+
+### cli.py — CLI Layer
+
+**Purpose:** Click command definitions that wire core functions to the terminal.
+
+**Location:** `src/agent_sommelier/skill_store/cli.py`
+
+**Entry Point:**
+```python
+skill-store = "agent_sommelier.skill_store.cli:main"
+```
+
+**Commands:** `init`, `sync`, `create-new`, `load`, `preview`, `list`, `search`, `pin`, `unpin`, `groups`, `status`, `version`, `help`.
+
+### mcp.py — MCP Server
+
+**Purpose:** FastMCP server exposing the skill store as MCP tools for agent integration.
+
+**Location:** `src/agent_sommelier/skill_store/mcp.py`
+
+**Entry Point:**
+```python
+skill-store-mcp = "agent_sommelier.skill_store.mcp:main"
+```
+
+**Tools:**
+
+| Tool | Args | Returns |
+|---|---|---|
+| `search_skills` | `query: str` | JSON — matched skills with per-file match details |
+| `get_skill` | `slug: str` | JSON — metadata, resolved path, directory tree |
+| `preview_skill` | `slug: str, lines: int` | JSON — SKILL.md content preview |
+| `list_skills` | `page: int, group: str \| None` | JSON — paginated skill listing |
+
+**Transport:** stdio (default). The server is spawned as a subprocess by the agent, communicates over JSON-RPC via stdin/stdout. No HTTP server needed.
+
+**Dependencies:** Requires `mcp >= 1.0.0` (optional `[mcp-srv]` extra).
+
+**Integration in opencode.json:**
+```json
+"mcpServers": {
+    "skill-store": {
+        "command": "skill-store-mcp"
+    }
+}
+```
 
 ### Storage
 
-The skill registry lives outside the repo at `~/.skill-store/` and is managed as a local catalog of skill folders and metadata.
+The skill registry lives outside the repo at `~/.skill-store/` (configurable via `SKILL_STORE_PATH` env var) and is managed as a local catalog of skill folders and metadata.
 
 ### Behavior Notes
 
 - `skill-store` is a lazy loader, not a runtime dependency injection system
 - registry operations should keep the on-disk index and installed skill copies in sync
 - skills are loaded on demand so the agent only pulls context for what it needs
+- the MCP server exposes a read-only subset (search, get, preview, list); admin operations (init, sync, pin, groups) remain CLI-only
 
 ---
 
@@ -661,7 +727,7 @@ screenshot_mss(output_path) -> bool
 ```
 click >= 8.1.0          <-- All tools (CLI framework)
     |
-rich >= 13.0.0          <-- bg, crony (table output)
+rich >= 13.0.0          <-- bg, crony, skill-store (table output)
     |
 dateparser >= 1.2.0    <-- crony (optional, natural language)
     |
@@ -670,6 +736,8 @@ schedule >= 1.2.0      <-- crony (optional, not currently used)
 mss >= 9.0.0           <-- screenshot (optional, primary capture)
     |
 pillow >= 10.0.0       <-- screenshot (optional, mss dependency)
+    |
+mcp >= 1.0.0           <-- skill-store (optional [mcp-srv], MCP runtime)
 ```
 
 ---

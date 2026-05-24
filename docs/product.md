@@ -13,9 +13,10 @@ uv tool install agent-sommelier-cli
 
 **Optional extras:**
 ```bash
-uv tool install agent-sommelier-cli[crony]    # Cron job support
+uv tool install agent-sommelier-cli[crony]      # Cron job support
 uv tool install agent-sommelier-cli[screenshot]  # Screenshot support
-uv tool install agent-sommelier-cli[all]      # Everything
+uv tool install agent-sommelier-cli[mcp-srv]     # MCP server for skill-store
+uv tool install agent-sommelier-cli[all]         # Everything
 ```
 
 ---
@@ -487,6 +488,15 @@ Local skill registry for loading, browsing, pinning, and syncing agent skills wi
 
 **Use it for:** discovering available skills, loading one when needed, and keeping a local registry current.
 
+### Entry Points
+
+| Command | Purpose |
+|---|---|
+| `skill-store` | Click CLI — interactive browsing, admin (init, sync, pin, groups) |
+| `skill-store-mcp` | FastMCP server (stdio) — agent-facing tools: `search_skills`, `get_skill`, `preview_skill`, `list_skills` |
+
+The MCP server is an optional extra (`agent-sommelier-cli[mcp-srv]`) and is configured in the agent's MCP servers list (e.g. `opencode.json`). It exposes a read-only subset of the skill store for agent consumption.
+
 ---
 
 ## Skill: tmux — Terminal Session Control
@@ -553,6 +563,7 @@ If issues: download from https://github.com/marlocarlo/psmux/releases
 - `schedule >= 1.2.0` — Schedule library (crony)
 - `mss >= 9.0.0` — Cross-platform screenshot (screenshot)
 - `pillow >= 10.0.0` — Image processing (screenshot)
+- `mcp >= 1.0.0` — MCP server runtime for skill-store (`[mcp-srv]` extra)
 
 ---
 
