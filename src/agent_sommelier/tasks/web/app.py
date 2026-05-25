@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.staticfiles import StaticFiles
+from starlette.responses import FileResponse
 
 from agent_sommelier.tasks import (
     _ensure_config,
@@ -21,6 +21,7 @@ from agent_sommelier.tasks import (
     add_task,
     build_overview_data,
     close_task,
+    delete_task,
     load_closed_yaml,
     load_tasks_yaml,
     update_task,
@@ -54,6 +55,8 @@ def _build_overview() -> dict[str, Any]:
     done_tasks.sort(key=lambda t: t.get("closed_at", t.get("completed", t.get("created", ""))), reverse=True)
     overview_data["done"] = done_tasks
     overview_data["counts"]["done"] = len(done_tasks)
+    # Include status config so frontend knows available columns
+    overview_data["statuses"] = config.get("statuses", [])
     return overview_data
 
 
@@ -96,10 +99,12 @@ app = FastAPI(lifespan=lifespan)
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     client_id = await manager.connect(websocket)
+    print(f"[WS] Client {client_id} connected — sending overview...")
     try:
         # Send initial overview and meta on connect
         overview = _build_overview()
         await manager.send_personal({"type": "overview", "data": overview}, websocket)
+        print(f"[WS] Overview sent to {client_id}")
 
         # Message loop
         while True:
@@ -122,6 +127,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         priority=msg.get("priority"),
                         tags=msg.get("tags"),
                         source=msg.get("source", "web"),
+                        claimed=msg.get("claimed"),
+                        created_by=msg.get("createdBy"),
+                        order=msg.get("order", 0),
+                        status=msg.get("status"),
                     )
                     await manager.broadcast({
                         "type": "task_created",
@@ -131,12 +140,24 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 elif msg_type == "update_task":
                     task_id = msg["id"]
                     kwargs: dict[str, Any] = {}
+                    if "title" in msg:
+                        kwargs["title"] = msg["title"]
                     if "status" in msg:
                         kwargs["status"] = msg["status"]
                     if "priority" in msg:
                         kwargs["priority"] = msg["priority"]
+                    if "tags" in msg:
+                        kwargs["tags"] = msg["tags"]
+                        kwargs["replace_tags"] = msg.get("replace_tags", True)
                     if "claimed" in msg:
                         kwargs["claimed"] = msg["claimed"]
+                    if "created_by" in msg:
+                        kwargs["created_by"] = msg["created_by"]
+                    if "notes" in msg:
+                        kwargs["notes"] = msg["notes"]
+                        kwargs["replace_notes"] = msg.get("replace_notes", True)
+                    if "order" in msg:
+                        kwargs["order"] = msg["order"]
                     task = update_task(task_id, **kwargs)
                     await manager.broadcast({
                         "type": "task_updated",
@@ -148,6 +169,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     await manager.broadcast({
                         "type": "task_updated",
                         "task": dict(task),
+                    })
+
+                elif msg_type == "delete_task":
+                    delete_task(task_id=msg["id"])
+                    await manager.broadcast({
+                        "type": "task_deleted",
+                        "task_id": msg["id"],
                     })
 
                 elif msg_type == "take_task":
@@ -192,15 +220,25 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 }, websocket)
 
     except WebSocketDisconnect:
-        pass
-    except Exception:
-        pass
+        print(f"[WS] Client {client_id} disconnected")
+    except Exception as e:
+        print(f"[WS] Client {client_id} error: {e}")
     finally:
         manager.disconnect(websocket)
 
 
-# Mount static files if the dist/ directory exists
-# NOTE: must be mounted after WebSocket route to avoid intercepting /ws
+# Serve static SPA files — catch-all HTTP route (does NOT intercept WebSocket scopes)
+# NOTE: using api_route() instead of mount() so WebSocket scopes are never intercepted
 _dist_dir = Path(__file__).resolve().parent / "dist"
 if _dist_dir.is_dir():
-    app.mount("/", StaticFiles(directory=str(_dist_dir), html=True), name="static")
+    @app.api_route("/", methods=["GET"])
+    async def serve_root():
+        return FileResponse(str(_dist_dir / "index.html"))
+
+    @app.api_route("/{path:path}", methods=["GET"])
+    async def serve_spa(path: str):
+        """Serve static files or fall back to index.html."""
+        file_path = _dist_dir / path
+        if file_path.is_file():
+            return FileResponse(str(file_path))
+        return FileResponse(str(_dist_dir / "index.html"))

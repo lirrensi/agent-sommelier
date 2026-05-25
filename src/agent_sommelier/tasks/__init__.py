@@ -47,6 +47,7 @@ from .core import (  # noqa: F401
     add_task,
     build_overview_data,
     close_task,
+    delete_task,
     filter_tasks,
     init_task_files,
     load_closed_yaml,

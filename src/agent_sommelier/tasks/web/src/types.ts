@@ -1,8 +1,5 @@
-// FILE: src/agent_sommelier/web/src/types.ts
+// FILE: src/types.ts
 // PURPOSE: TypeScript interfaces for task data and WebSocket protocol messages.
-// OWNS: Shared type definitions used by main.ts and any future web components.
-// EXPORTS: Task, OverviewSections, Overview, Meta, ServerMessage
-// DOCS: .agents/reports/plan_web_ui_2026-05-24.md
 
 export interface Task {
   id: string
@@ -15,17 +12,13 @@ export interface Task {
   deps?: { id: string; type: string }[]
   claimed?: string | null
   closed: boolean
-  created: string
+  created?: string
   updated?: string
+  closed_at?: string
+  createdBy?: string
+  source?: string
+  order?: number
   hint?: string
-}
-
-export interface OverviewSections {
-  now: Task[]
-  ready: Task[]
-  waiting: Task[]
-  parked: Task[]
-  done: Task[]
 }
 
 export interface Overview {
@@ -34,24 +27,12 @@ export interface Overview {
   waiting: Task[]
   parked: Task[]
   done: Task[]
-  counts: {
-    active: number
-    now: number
-    ready: number
-    waiting: number
-    parked: number
-    done: number
-  }
-}
-
-export interface Meta {
-  counter: number
-  config: Record<string, unknown>
+  counts: Record<string, number>
+  statuses: string[]
 }
 
 export type ServerMessage =
   | { type: 'overview'; data: Overview }
-  | { type: 'meta'; data: Meta }
   | { type: 'task_created'; task: Task }
   | { type: 'task_updated'; task: Task }
   | { type: 'task_deleted'; task_id: string }

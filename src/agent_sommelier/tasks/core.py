@@ -553,10 +553,12 @@ def add_task(title: str, priority: int | str | None = None, tags: list[str] | No
              created_by: str | None = None,
              deps: list[dict[str, str]] | None = None,
              related: str | None = None, notes: str | None = None,
-             evidence: str | None = None) -> dict[str, Any]:
+             evidence: str | None = None, order: int = 0,
+             status: str | None = None) -> dict[str, Any]:
     _require_tasks_dir()
     s = _ensure_storage()
     meta = s.load_meta()
+    config = _ensure_config(meta)
     counter = meta.get("counter", 0)
     if not isinstance(counter, int):
         counter = 0
@@ -564,12 +566,18 @@ def add_task(title: str, priority: int | str | None = None, tags: list[str] | No
     meta["counter"] = new_counter
     task_id = _format_id(new_counter)
 
+    if status and status not in config["statuses"]:
+        status = config.get("default_status", "todo")
+    elif not status:
+        status = config.get("default_status", "todo")
+
     task: dict[str, Any] = {
         "id": task_id,
         "title": title,
-        "status": _ensure_config(meta).get("default_status", "todo"),
+        "status": status,
         "created": _now_date(),
         "closed": False,
+        "order": order,
     }
     if priority is not None:
         norm_p = _normalize_priority(priority)
@@ -603,13 +611,17 @@ def update_task(task_id: str, status: str | None = None, priority: int | str | N
                 deps: list[dict[str, str]] | None = None,
                 related: str | None = None, notes: str | None = None, replace_notes: bool = False,
                 evidence: str | None = None, replace_evidence: bool = False,
-                closed: bool | None = None) -> dict[str, Any]:
+                closed: bool | None = None, title: str | None = None,
+                order: int | None = None,
+                replace_tags: bool = False) -> dict[str, Any]:
     _require_tasks_dir()
     s = _ensure_storage()
     task = s.get_task(task_id)
     if task is None:
         raise ValueError(f"Task not found: {task_id}")
 
+    if title is not None:
+        task["title"] = title
     if status is not None:
         meta = s.load_meta()
         config_status = _ensure_config(meta)
@@ -621,12 +633,17 @@ def update_task(task_id: str, status: str | None = None, priority: int | str | N
         if norm_p is not None:
             task["priority"] = norm_p
     if tags is not None:
-        existing = task.get("tags", []) or []
-        new_tags = [t.lower().strip().replace(" ", "-") for t in tags]
-        for tag in new_tags:
-            if tag not in existing:
-                existing.append(tag)
-        task["tags"] = existing
+        normalized = [t.lower().strip().replace(" ", "-") for t in tags]
+        if replace_tags:
+            task["tags"] = normalized
+        else:
+            existing = task.get("tags", []) or []
+            for tag in normalized:
+                if tag not in existing:
+                    existing.append(tag)
+            task["tags"] = existing
+    if order is not None:
+        task["order"] = order
     if claimed is not None:
         if claimed:
             task["claimed"] = claimed
@@ -686,6 +703,16 @@ def close_task(task_id: str, note: str | None = None, evidence: str | None = Non
 
     s.save_task(task)
     return task
+
+
+def delete_task(task_id: str) -> None:
+    """Permanently delete a task by ID."""
+    _require_tasks_dir()
+    s = _ensure_storage()
+    task = s.get_task(task_id)
+    if task is None:
+        raise ValueError(f"Task not found: {task_id}")
+    s.delete_task(task_id)
 
 
 def _task_has_dep_id(task: dict[str, Any], dep_id: str) -> bool:
