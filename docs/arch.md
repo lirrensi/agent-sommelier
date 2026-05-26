@@ -746,7 +746,7 @@ essh = "agent_sommelier.essh:main"
 ```
 ~/.essh/
 ├── profiles.json       # Array of profile objects
-├── keys/
+├── keys/               # Legacy only — keys from older versions
 │   └── {name}/
 │       ├── id_ed25519       # Private key
 │       └── id_ed25519.pub   # Public key
@@ -754,32 +754,55 @@ essh = "agent_sommelier.essh:main"
 │   └── {name}.pending       # Authorization request lock (contains timestamp)
 └── exports/
     └── essh-export-*.tar.gz # Portable export archives
+
+~/.ssh/                     # Primary key location for new profiles
+├── id_ed25519              # Default key (or id_ed25519_{name} if default exists)
+└── id_ed25519.pub
 ```
 
+Keys now live in `~/.ssh/` by default (user's standard SSH directory). The `~/.essh/keys/` directory is only populated by legacy profiles created with older versions of `essh`.
+
 ### Profile JSON Schema
+
+Two valid forms:
+
 ```json
 {
   "name": "lenny",
   "user": "root",
   "host": "1.2.3.4",
   "port": 2222,
-  "key_path": "~/.essh/keys/lenny/id_ed25519"
+  "key_path": ""
 }
 ```
+
+```json
+{
+  "name": "myhost",
+  "user": "deploy",
+  "host": "example.com",
+  "port": 22,
+  "key_path": "/home/user/.ssh/id_ed25519_myhost"
+}
+```
+
+| `key_path` value | Behavior |
+|---|---|
+| `""` (empty) | "Default keys" mode — no `-i` flag at connect time; SSH uses its own key discovery |
+| Absolute path (e.g. `~/.ssh/id_ed25519`) | Passed as `-i <key_path>` to SSH command |
 
 ### Implementation Flow
 
 #### `essh add`
 ```
-add_profile(name, target, key_override=None)
+add(first, second, name=None, identity=None)
     |
-    +-- if name not provided:
-    |       name = generate_name()
-    |       |
-    |       +-- pick random color from COLORS list
-    |       +-- pick random animal from ANIMALS list
-    |       +-- combine: "{color}-{animal}"
-    |       +-- if collision: append "-{hex3}" suffix, retry up to 10x
+    +-- resolve name & target from positional args and -n flag
+    |   +-- -n NAME + first=TARGET                     --> name=NAME, target=TARGET
+    |   +-- first=NAME + second=TARGET                  --> name=NAME, target=TARGET
+    |   +-- first=TARGET (only one arg)                  --> auto-generate name
+    |       +-- if TTY: prompt user (accept/suggested)
+    |       +-- if non-TTY: use generated name silently
     |
     +-- validate_name(name)
     |       |
@@ -790,23 +813,46 @@ add_profile(name, target, key_override=None)
     |
     +-- if profile_exists(name): error
     |
-    +-- mkdir ~/.essh/keys/{name}/
+    +-- ================= BRANCH: -i provided =================
     |
-    +-- if key_override:
-    |       copy_keypair(override, ~/.essh/keys/{name}/)
+    +-- if identity:
+    |       |
+    |       +-- resolve & validate identity path exists
+    |       +-- find pubkey (identity.pub or identity + ".pub")
+    |       +-- ssh_copy_id(user, host, port, pubkey)
+    |       +-- profile.key_path = str(resolved_identity)   # reference in-place
+    |
+    +-- ================= BRANCH: no -i (default keys mode) ==
     |
     +-- else:
-    |       ssh-keygen -t ed25519 -f ~/.essh/keys/{name}/id_ed25519 -N "" -C "essh:{name}"
-    |
-    +-- ssh_copy_id(user, host, port, pubkey_path)
     |       |
-    |       +-- read public key
-    |       +-- build remote cmd: mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys
-    |       +-- pipe key into: ssh -p {port} {user}@{host} {remote_cmd}
-    |       +-- interactive (user enters password once)
+    |       +-- _try_ssh_default_keys(user, host, port)
+    |       |       |
+    |       |       +-- ssh -o PasswordAuthentication=no -o BatchMode=yes
+    |       |       |      -o StrictHostKeyChecking=accept-new
+    |       |       |      -o ConnectTimeout=5 ... "echo essh_ok"
+    |       |       +-- returncode == 0 --> existing key works
+    |       |
+    |       +-- if probe SUCCEEDS:
+    |       |       profile.key_path = ""   # use default SSH keys
+    |       |
+    |       +-- if probe FAILS:
+    |               |
+    |               +-- if TTY: confirm "Generate one?"
+    |               +-- if non-TTY: auto-proceed
+    |               |
+    |               +-- if user declines: error with hint to use -i
+    |               |
+    |               +-- key_path = ~/.ssh/id_ed25519
+    |               |   (or ~/.ssh/id_ed25519_{name} if default exists)
+    |               |
+    |               +-- mkdir ~/.ssh/ (if missing)
+    |               +-- ssh-keygen -t ed25519 -f {key_path} -N "" -C "essh:{name}"
+    |               +-- ssh_copy_id(user, host, port, key_path.pub)
+    |               +-- profile.key_path = str(key_path)
     |
-    +-- save profile to profiles.json
-    +-- on failure: cleanup key dir, report error
+    +-- append profile to profiles.json (atomic write via .tmp)
+    +-- on keygen failure: raise ClickException with stderr
 ```
 
 ### Name Generation
@@ -831,14 +877,21 @@ validate_name(name) -> None | raises ClickException
 
 #### `essh NAME [COMMAND]` (connect/run)
 ```
-connect(name, command=None)
+connect(name, remote_command=None)
     |
-    +-- resolve_profile(name) --> profile or error
+    +-- validate_name(name)
+    |
+    +-- resolve_profile(name) --> profile or error (list known names if not found)
+    |
+    +-- resolve key_path from profile
+    |       |
+    |       +-- key_path_raw = profile.get("key_path") or ""
+    |       +-- key_path = Path(key_path_raw) if key_path_raw else None
     |
     +-- detect_tty()
     |       |
     |       +-- sys.stdin.isatty() --> interactive
-    |       +-- not isatty() --> agent mode
+    |       +-- not isatty() --> agent mode (requires authorization)
     |
     +-- [agent mode] wait_for_authorization(name)
     |       |
@@ -850,30 +903,41 @@ connect(name, command=None)
     |       |
     |       +-- write ~/.essh/requests/{name}.pending (timestamp only)
     |       |
-    |       +-- poll loop (500ms intervals):
+    |       +-- poll loop (500ms intervals, 30s timeout):
     |       |       |
     |       |       +-- file deleted? --> authorized, proceed
     |       |       +-- 30s elapsed? --> timeout error
     |       |
     |
-    +-- ensure_ssh_agent(key_path)
+    +-- [optional] ensure_ssh_agent(key_path, is_tty)
     |       |
-    |       +-- if not SSH_AUTH_SOCK:
-    |       |       start ssh-agent, export env vars
-    |       |
-    |       +-- if key not in ssh-add -l:
-    |       |       ssh-add {key_path} (may prompt for passphrase)
-    |       |
+    |       +-- if SSH_AUTH_SOCK not set: return (nothing to do)
+    |       +-- if TTY: subprocess.run(ssh-add, inherit stdio)
+    |       |           (user can enter passphrase if needed)
+    |       +-- if non-TTY: subprocess.run(ssh-add, capture_output=True)
+    |       |               (silent, no hang, no leak)
+    |       +-- failure is non-fatal
+    |       +-- skipped entirely when key_path is None
     |
-    +-- build_ssh_args(profile, command)
+    +-- _run_ssh(user, host, port, key_path, command, is_tty)
     |       |
-    |       +-- args = ["-i", key_path, "-p", str(port)]
-    |       +-- if command: args.extend([f"{user}@{host}", command])
-    |       +-- else: args.extend([f"{user}@{host}"])
+    |       +-- find_ssh()
+    |       |       +-- shutil.which("ssh") -- raises ClickException if missing
+    |       |
+    |       +-- build args:
+    |       |       |
+    |       |       +-- args = [ssh]
+    |       |       +-- if key_path: args += ["-i", str(key_path)]
+    |       |       +-- args += ["-p", str(port), f"{user}@{host}"]
+    |       |       +-- if command: args.extend(command)
+    |       |
+    |       +-- if TTY: subprocess.run(args, inherit stdio)
+    |       +-- if non-TTY: subprocess.run(args, capture_output=True)
+    |       |               echo stdout, print stderr with dim styling
+    |       |
+    |       +-- return exit code
     |
-    +-- os.execvp("ssh", args) or subprocess.run()
-    |
-    +-- forward SSH exit code
+    +-- sys.exit(exit_code)
 ```
 
 #### `essh authorize NAME`
@@ -898,7 +962,17 @@ export_profiles(output=None)
     |
     +-- copy profiles.json to temp
     |
-    +-- copy ~/.essh/keys/ to temp/keys/
+    +-- copy keys to temp/keys/  (per-profile logic)
+    |       |
+    |       +-- for each profile:
+    |       |       |
+    |       |       +-- key_path empty?      --> skip (no key to export)
+    |       |       +-- legacy (~/.essh/keys/{name}/ exists)?
+    |       |       |       --> copytree(legacy_src, temp/keys/{name}/)
+    |       |       +-- external key file?
+    |       |               --> copy2(private_key, temp/keys/{name}/id_ed25519)
+    |       |               --> copy2(public_key, temp/keys/{name}/id_ed25519.pub)
+    |       |
     |
     +-- extract known_hosts entries for managed hosts
     |       |
@@ -906,7 +980,7 @@ export_profiles(output=None)
     |       +-- filter lines matching managed hosts/IPs
     |       +-- write to temp/known_hosts
     |
-    +-- create tar.gz archive from temp dir
+    +-- create tar.gz archive from temp dir (top-level entries only)
     |
     +-- cleanup temp dir
     |
@@ -915,7 +989,7 @@ export_profiles(output=None)
 
 #### `essh import`
 ```
-import_profiles(archive_path, force=False)
+import_(archive, force=False)
     |
     +-- validate archive exists, is .tar.gz
     |
@@ -926,9 +1000,17 @@ import_profiles(archive_path, force=False)
     +-- for each profile:
     |       |
     |       +-- if name exists and not force: skip with warning
-    |       +-- if name exists and force: overwrite
-    |       +-- copy keys to ~/.essh/keys/{name}/
-    |       +-- add to profiles.json
+    |       +-- if name exists and force: remove existing entry
+    |       |
+    |       +-- resolve key_path and restore keys:
+    |       |       |
+    |       |       +-- key_path empty ("")?     --> preserve as-is (default keys)
+    |       |       +-- archive has keys/{name}/? --> restore to ~/.essh/keys/{name}/
+    |       |       |                               (legacy compat, re-root key_path)
+    |       |       +-- external path (no keys    --> preserve path, warn if missing
+    |       |           in archive)?
+    |       |
+    |       +-- append to profiles.json
     |
     +-- merge known_hosts entries
     |       |
@@ -937,41 +1019,49 @@ import_profiles(archive_path, force=False)
     |
     +-- cleanup temp dir
     |
-    +-- report counts
+    +-- report counts: "Imported: N, Skipped: M"
 ```
 
 ### TTY Detection
 ```
 detect_tty():
-    return sys.stdin.isatty() and sys.stdout.isatty()
+    return sys.stdin.isatty()
 ```
-Used to decide whether the connection is interactive (user at terminal) or agent-driven (no TTY, needs authorization).
+Used to decide whether the connection is interactive (user at terminal, proceeds immediately) or agent-driven (no TTY, requires authorization gate).
 
 ### SSH Agent Management
 
-`ensure_ssh_agent(key_path)` handles the full ssh-agent lifecycle:
-1. If `SSH_AUTH_SOCK` is not set in the environment, start `ssh-agent` and capture its output to set `SSH_AUTH_SOCK` and `SSH_AGENT_PID`.
-2. Run `ssh-add -l` to check if the key is already loaded (grep for key_path).
-3. If not loaded, run `ssh-add {key_path}` — this may prompt the user for a passphrase if the key has one.
-4. On Windows, prefer the native OpenSSH `ssh-agent` service which may already be running.
+`ensure_ssh_agent(key_path, is_tty)` is purely optional — never required for connectivity since `_run_ssh` passes `-i` directly:
+
+1. Only acts if `SSH_AUTH_SOCK` is already set in the environment (an agent is already running).
+2. In TTY mode: runs `ssh-add` inheriting stdin/stdout/stderr — the user can enter a passphrase if needed.
+3. In non-TTY mode: runs `ssh-add` with `capture_output=True` — silent, no hanging, no passphrase leak.
+4. **Never starts ssh-agent.** Failure is always non-fatal.
+5. Skipped entirely when `key_path` is `None` (default keys mode).
 
 ### Platform SSH Detection
 
 ```
-find_ssh() -> str:
-    |
-    +-- Windows:
-    |       |
-    |       +-- try: Get-Command ssh.exe (native OpenSSH)
-    |       +-- fallback: where ssh
-    |       +-- fallback: wsl ssh (WSL)
-    |       +-- none found: error with install hint
+_find_ssh() -> list[str]:
     |
     +-- Unix (Linux/macOS):
+    |       |
+    |       +-- shutil.which("ssh")
+    |       +-- found?  --> return ["ssh"]
+    |       +-- missing? --> raise ClickException with install hint
+    |                       ("apt install openssh-client" / "brew install openssh")
+    |
+    +-- Windows:
             |
-            +-- which ssh (or /usr/bin/ssh)
-            +-- always found on standard installs
+            +-- shutil.which("ssh.exe") found?  --> return ["ssh"]
+            +-- shutil.which("wsl") found?       --> return ["wsl", "ssh"]
+            +-- nothing found --> raise ClickException with install hint
+                                ("winget install Microsoft.OpenSSH.Beta" / "wsl --install")
 ```
+
+`_require_tool(name)` is a generic helper used for `ssh-keygen` and `ssh-add` discovery — calls `shutil.which()` and raises `ClickException` with the binary name if not found.
+
+The old functions `copy_identity_file()`, `_set_private_perms()`, `ssh_agent_cmd()`, and `_parse_agent_output()` have been removed — they are no longer relevant to the current key model.
 
 ### Authorization Flow Diagram
 ```

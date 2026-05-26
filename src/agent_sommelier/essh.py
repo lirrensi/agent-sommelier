@@ -176,6 +176,12 @@ def _require_tool(name: str, *fallback_names: str) -> str:
 def _find_ssh() -> list[str]:
     """Find the SSH binary, falling back to WSL on Windows."""
     if sys.platform != "win32":
+        if not shutil.which("ssh"):
+            raise click.ClickException(
+                "ssh not found on PATH. Install OpenSSH client:\n"
+                "  apt install openssh-client    (Debian/Ubuntu)\n"
+                "  brew install openssh          (macOS)"
+            )
         return ["ssh"]
     # Windows: try native ssh first
     if shutil.which("ssh.exe"):
@@ -283,23 +289,32 @@ def ssh_copy_id(user: str, host: str, port: int, pubkey_path: Path) -> None:
 # ssh-agent and key loading
 # ---------------------------------------------------------------------------
 
-def ensure_ssh_agent(key_path: Path) -> None:
+def ensure_ssh_agent(key_path: Path, is_tty: bool = False) -> None:
     """Optionally add the key to an already-running ssh-agent.
 
     ``_run_ssh`` always passes ``-i`` with the key path, so ssh-agent is
     never required — this is purely a convenience when the user already
     has an agent running (e.g. for agent forwarding).
+
+    In non-TTY mode the subprocess is fully captured to avoid hanging
+    on a passphrase prompt or leaking output into the agent's stream.
     """
     if "SSH_AUTH_SOCK" not in os.environ:
         return  # no agent running — nothing to do
 
     add_cmd = ssh_add_cmd()
-    subprocess.run(
-        [add_cmd, str(key_path)],
-        stdin=sys.stdin,
-        stdout=sys.stdout,
-        stderr=sys.stderr,
-    )
+    if is_tty:
+        subprocess.run(
+            [add_cmd, str(key_path)],
+            stdin=sys.stdin,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
+    else:
+        subprocess.run(
+            [add_cmd, str(key_path)],
+            capture_output=True,
+        )
     # Non-fatal: agent might reject the key or be unavailable
 
 
@@ -660,7 +675,7 @@ def connect(name: str, remote_command: tuple[str, ...]) -> None:
 
     # Optionally add the key to ssh-agent (if one is already running)
     if key_path:
-        ensure_ssh_agent(key_path)
+        ensure_ssh_agent(key_path, is_tty)
 
     # Build and run SSH
     exit_code = _run_ssh(user, host, port, key_path, list(remote_command), is_tty)
@@ -957,7 +972,10 @@ def import_(archive: Path, force: bool) -> None:
                 shutil.copytree(source_keys, dest_keys)
             else:
                 # External key path — keep the stored path, keys stay in place
-                pass
+                console.print(
+                    f"[yellow]Warning: key for '{ip_name}' not in archive. "
+                    f"Stored path '{ip_raw}' may not exist on this machine.[/yellow]"
+                )
 
             existing_profiles.append(ip)
             imported_count += 1

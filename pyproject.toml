@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-sommelier-cli"
-version = "1.2.5"
+version = "1.2.6"
 description = "A capability sommelier for your coding agent — tools, skills, memory, tasks"
 readme = "README.md"
 requires-python = ">=3.10"

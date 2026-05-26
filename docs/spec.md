@@ -288,7 +288,7 @@ All task data is stored as plain-text YAML in the project repository. No authent
 
 ## Abstract
 
-`essh` is a portable SSH wrapper CLI providing name abstraction, agent authorization gating, profile portability, and ssh-agent lifecycle management. It uses filesystem semaphores for authorization and JSON for profile storage — no daemon, no database.
+`essh` is a portable SSH wrapper CLI providing name abstraction, agent authorization gating, and profile portability. It uses filesystem semaphores for authorization and JSON for profile storage — no daemon, no database.
 
 ## Terminology
 
@@ -311,10 +311,12 @@ All task data is stored as plain-text YAML in the project repository. No authent
 | File | Contents |
 |---|---|
 | `~/.essh/profiles.json` | Array of profile objects |
-| `~/.essh/keys/{name}/id_ed25519` | Private key for the named host |
-| `~/.essh/keys/{name}/id_ed25519.pub` | Public key for the named host |
+| `~/.essh/keys/{name}/` | **Legacy only.** Key directory for profiles created by older versions |
+| `~/.ssh/id_ed25519` (or `~/.ssh/id_ed25519_{name}`) | Primary key location for new profiles |
 | `~/.essh/requests/{name}.pending` | Authorization request lock file |
 | `~/.essh/exports/` | Output directory for export archives |
+
+Keys no longer live in `~/.essh/keys/` by default. New profiles store keys in `~/.ssh/` (the user's standard SSH directory). The `~/.essh/keys/{name}/` directory is only used for **legacy** profiles created by earlier versions and is preserved for backward compatibility.
 
 ### Profile Model
 
@@ -324,9 +326,16 @@ All task data is stored as plain-text YAML in the project repository. No authent
   "user": "root",
   "host": "1.2.3.4",
   "port": 2222,
-  "key_path": "~/.essh/keys/lenny/id_ed25519"
+  "key_path": ""
 }
 ```
+
+`key_path` has two valid forms:
+
+| Value | Meaning |
+|---|---|
+| `""` (empty string) | Use default SSH keys — no `-i` flag is passed; SSH uses its own key discovery (`~/.ssh/id_*` or ssh-agent) |
+| An absolute path (e.g. `"~/.ssh/id_ed25519_myhost"` or any external path) | Passed as `-i <key_path>` to the SSH command |
 
 ## Behavioral Specification
 
@@ -356,12 +365,19 @@ When NAME is not provided, the system MUST:
 MUST:
 1. Parse `USER@HOST[:PORT]` — port defaults to 22.
 2. If NAME was provided: validate it; if a profile with NAME already exists, reject with error.
-3. Generate directory `~/.essh/keys/{name}/`.
-4. If `-i KEY` is provided, copy the specified keypair into the keys directory.
-5. Otherwise, generate a new ed25519 keypair via `ssh-keygen -t ed25519 -f {key_path} -N "" -C "essh:{name}"`.
-6. Run the ssh-copy-id equivalent: pipe the public key into `ssh -p {port} {user}@{host} "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"`. The user is prompted for the remote password once.
-7. On success, save the profile to `profiles.json`.
-8. On failure, clean up generated keypair and report error.
+
+3. **If `-i KEY` is provided:** reference the key in-place (no copy). Push the public key (`KEY.pub`) to the remote host via `ssh-copy-id`. Save profile with `key_path` set to the absolute path of `KEY`.
+
+4. **If `-i` is NOT provided (default keys mode):**
+   a. Probe the remote host with `PasswordAuthentication=no, BatchMode=yes, ConnectTimeout=5` to test whether an existing SSH key already works.
+   b. **If the probe succeeds** (exit code 0): save profile with `key_path: ""` (empty string — no key generation, no `-i` flag at connect time).
+   c. **If the probe fails:** offer to generate a new ed25519 keypair (always proceeds in agent mode / non-TTY).
+      i.   Generate key at `~/.ssh/id_ed25519` if that file does not exist, otherwise at `~/.ssh/id_ed25519_{name}`.
+      ii.  Generate via `ssh-keygen -t ed25519 -f {key_path} -N "" -C "essh:{name}"`.
+      iii. Run the ssh-copy-id equivalent: pipe the public key into `ssh -p {port} {user}@{host} "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"`. The user is prompted for the remote password once.
+      iv.  Save profile with `key_path` set to the generated key path.
+
+5. On save, append the profile to `profiles.json` atomically (write to `.tmp` then `os.replace`).
 
 ### 2. `essh NAME [COMMAND]`
 
@@ -369,20 +385,31 @@ MUST:
 
 1. Look up NAME in `profiles.json`. If not found, list known names and exit 1.
 2. Detect TTY: check `sys.stdin.isatty()`.
-3. **If TTY is present (interactive):** connect immediately via `ssh -i {key_path} -p {port} {user}@{host} [COMMAND]`.
+3. **If TTY is present (interactive):** connect immediately.
 4. **If TTY is absent (agent):**
    a. Create `~/.essh/requests/{name}.pending` with timestamp.
    b. If a pending file already exists and is younger than 30 seconds, exit with "Request already pending" error.
    c. Poll every 500ms: if the file is deleted, proceed with SSH. If 30 seconds elapse, exit with "Authorization timeout" error.
    d. On authorization, delete any stale pending file and proceed with SSH.
 
-5. Before connecting, ensure the profile's key is added to `ssh-agent`:
-   a. Check if `ssh-agent` is running via `SSH_AUTH_SOCK` env var.
-   b. If not running, start it: `eval $(ssh-agent -s)`.
-   c. Check if the key is already loaded: `ssh-add -l | grep {key_path}`.
-   d. If not loaded, run `ssh-add {key_path}` (may prompt for passphrase).
-6. Build SSH args: `[-i key_path] [-p port] [user@host] [command]`.
-7. Execute SSH and forward the exit code.
+5. Optionally add the key to an already-running ssh-agent:
+   a. Check if `SSH_AUTH_SOCK` is set in the environment.
+   b. If set, run `ssh-add {key_path}` to add the key.
+   c. In TTY mode: inherit stdin/stdout/stderr (user can enter a passphrase).
+   d. In non-TTY mode: capture output silently (no hang, no passphrase leak).
+   e. **Never starts ssh-agent.** This step is purely a convenience for agent forwarding. Failure is non-fatal.
+   f. Skip this step entirely if `key_path` is empty (default keys mode).
+
+6. Build SSH args:
+   a. `[ssh]` — resolved via `shutil.which("ssh")`, validated to exist.
+   b. `[-i key_path]` — **only** if `key_path` is non-empty.
+   c. `[-p port]`
+   d. `[user@host]`
+   e. `[command]` — optional remote command.
+
+7. Execute SSH:
+   a. In TTY mode: inherit all stdio streams, forward the exit code.
+   b. In non-TTY mode: capture stdout/stderr, echo stdout to stdout, print stderr with dim styling, forward the exit code.
 
 ### 3. `essh authorize NAME`
 
@@ -400,6 +427,8 @@ MUST:
 
 1. Read `profiles.json`.
 2. Human-readable: table with columns Name, User, Host, Port, Key.
+   - Empty `key_path` displays `(default keys)` in dim style.
+   - Missing key file displays the path in red with `(missing)` label.
 3. `--json`: raw JSON array output.
 
 ### 5. `essh rm NAME`
@@ -407,7 +436,7 @@ MUST:
 MUST:
 
 1. Remove the profile from `profiles.json`.
-2. Delete the key directory `~/.essh/keys/{name}/`.
+2. Delete the key directory `~/.essh/keys/{name}/` **only if it exists** (legacy profiles with keys in the essh store). External/referenced keys are never deleted.
 3. Clean any stale pending requests for the name.
 
 ### 6. `essh export [OUTPUT]`
@@ -417,7 +446,10 @@ MUST:
 1. Default OUTPUT to `~/.essh/exports/essh-export-{YYYYMMDD_HHMMSS}.tar.gz`.
 2. Create a temp directory.
 3. Copy `profiles.json` into the temp directory.
-4. Copy all `~/.essh/keys/` directories into the temp directory.
+4. For each profile, copy its key(s) into `keys/{name}/` in the archive:
+   a. **Empty key_path** (`""`): skip — no key to export.
+   b. **Legacy key** in `~/.essh/keys/{name}/`: copy the entire directory.
+   c. **External key path**: copy the private key file (as `id_ed25519`) and public key file (as `id_ed25519.pub`, if it exists) into `keys/{name}/`.
 5. Extract `known_hosts` entries for all managed hosts.
 6. Create a `.tar.gz` archive.
 7. Clean up temp directory.
@@ -432,8 +464,11 @@ MUST:
 3. Read the imported `profiles.json`.
 4. For each imported profile:
    a. If name already exists and `--force` is not set, skip with warning.
-   b. If `--force`, overwrite the existing profile and keypair.
-   c. Copy keypair into `~/.essh/keys/{name}/`.
+   b. If `--force`, overwrite the existing profile.
+   c. Restore key based on key_path:
+      i.  **Empty key_path** (`""`): preserved as-is (default keys mode).
+      ii. **Keys found in archive's `keys/{name}/`**: restored to `~/.essh/keys/{name}/` (legacy compat).
+      iii.**External key path** (keys not in archive): path preserved as-is, warning printed that the key may not exist on this machine.
 5. Merge imported `known_hosts` entries into the local `known_hosts`.
 6. Clean up temp directory.
 7. Report number of profiles imported/skipped.
@@ -469,15 +504,18 @@ Agent process                    User process
 | Request already pending | Error with hint, exit 1 |
 | Authorization timeout | Error, exit 1 |
 | SSH connection fails | Forward SSH exit code |
-| No native SSH on Windows | Error with install hint, exit 1 |
+| `ssh` binary not found on PATH | Error with platform-specific install hint, exit 1 |
 | Import name conflict | Warning, skip, unless `--force` |
 | Missing export archive | Error, exit 1 |
+| `-i KEY` file not found | Error, exit 1 |
+| Key generation fails | Error with stderr, exit 1 |
 
 ## Security Considerations
 
 `essh` is **not a real security tool**. It provides guardrails + convenience:
 
-- Keys are stored in `~/.essh/keys/` with standard filesystem permissions.
+- Keys are stored in the user's standard `~/.ssh/` directory (or referenced in-place via `-i`), using system default filesystem permissions.
+- Legacy keys in `~/.essh/keys/` continue to work for backward compatibility.
 - The authorization gate is a filesystem semaphore — any process with filesystem access can bypass it.
 - `known_hosts` uses the system's native `~/.ssh/known_hosts` — no isolation from other SSH users.
 - If an attacker has user-level privileges on your machine, `essh` provides no meaningful defense.
