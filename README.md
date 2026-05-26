@@ -48,6 +48,7 @@ Pick the tools you need. Leave the rest. They all work independently — and the
 | `crony` | Cron jobs in plain English | `uv tool install "git+https://github.com/lirrensi/agent-sommelier"` |
 | `notify` | Cross-platform desktop notifications | Built-in |
 | `bg` | Background jobs, tracked by name | Built-in |
+| `essh` | SSH profile manager — no more `~/.ssh/config` roulette | Built-in |
 | `screenshot` | Screen capture, zero fuss | `uv tool install "git+https://github.com/lirrensi/agent-sommelier"` |
 | `tasks` | In-repo task management with deps & queues | Built-in |
 | `skill-store` | On-demand skill registry — load only what you need | Built-in |
@@ -66,6 +67,7 @@ npx skills add https://github.com/lirrensi/agent-sommelier
 | `screenshot` | Capture screens in scripts and pipelines |
 | `document-extractor` | Convert PDFs, Office docs, media to Markdown |
 | `edge-tts` | Text-to-speech via Microsoft Edge |
+| `essh` | SSH profile manager — save hosts, generate keys, connect by name |
 | `tmux` | Terminal multiplexing for SSH, REPLs, parallel agents |
 | `memory-bank` | **Core.** Episodic, semantic, procedural memory across sessions |
 | `task-system` | Full task lifecycle — deps, queues, 12 statuses, permanent history |
@@ -164,6 +166,40 @@ Cross-platform via `mss`, with native fallbacks on Linux.
 
 ---
 
+### 🔑 essh — SSH profile manager
+
+Save, name, and connect to SSH hosts — no more `~/.ssh/config` roulette or forgetting which server is which.
+
+```bash
+# Add a host — auto-generates a friendly name
+essh add deploy@192.168.1.50
+# → Generated name: coral-fox
+
+# Or name it yourself
+essh add myserver user@host:2222
+
+# Connect with the name
+essh myserver
+essh myserver uptime
+
+# Agent mode — request human authorization for non-interactive use
+essh authorize myserver
+
+# List, export, import
+essh list
+essh list --json
+essh export ~/backups/ssh-profiles.tar.gz
+essh import ~/backups/ssh-profiles.tar.gz
+essh rm myserver
+```
+
+- **Smart key setup** — detects existing working keys before generating new ones
+- **Color-animal names** — `coral-fox`, `amber-badger` — memorable, no `Host myserver-prod-2`
+- **Agent-mode** — `essh authorize NAME` lets a human gate connections from a script
+- **Portable** — `essh export` bundles profiles, keys, and known_hosts into a `.tar.gz`
+
+---
+
 ### 📋 tasks — Task management, in-repo
 
 A task system that lives in your repo. No database. No service. Just YAML files and a CLI.
@@ -239,6 +275,7 @@ skills/
 ├── desktop-notifications/SKILL.md
 ├── document-extractor/SKILL.md
 ├── edge-tts/SKILL.md
+├── essh/SKILL.md
 ├── memory-bank/SKILL.md            # ← Core: persistent context
 ├── task-system/SKILL.md
 ├── skill-store/SKILL.md            # ← Lazy-load hundreds of skills
@@ -273,14 +310,15 @@ agent-sommelier/
 │   ├── notify.py             # Desktop notifications
 │   ├── bg.py                 # Background job manager
 │   ├── crony.py              # Cron job scheduler
+│   ├── essh.py               # Portable SSH wrapper
 │   ├── screenshot.py         # Screen capture
 │   ├── tasks/                # In-repo task management package
 │   │   ├── __init__.py
 │   │   ├── cli.py
 │   │   ├── core.py
 │   │   └── render.py
-│   └── skill_store.py        # On-demand skill registry CLI
-├── skills/                   # Agent skill definitions (14 skills)
+│   └── skill_store/          # On-demand skill registry CLI + MCP
+├── skills/                   # Agent skill definitions (15 skills)
 ├── docs/                     # Product & architecture documentation
 ├── agent_chat/               # Design discussions & execution plans
 ├── tests/                    # Test suite (350+ tests)
