@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-sommelier-cli"
-version = "1.2.0"
+version = "1.2.5"
 description = "A capability sommelier for your coding agent — tools, skills, memory, tasks"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -41,6 +41,7 @@ all = [
 
 [project.scripts]
 crony = "agent_sommelier.crony:main"
+essh = "agent_sommelier.essh:main"
 notify = "agent_sommelier.notify:main"
 bg = "agent_sommelier.bg:main"
 screenshot = "agent_sommelier.screenshot:main"

@@ -281,3 +281,205 @@ All task data is stored as plain-text YAML in the project repository. No authent
 
 - **RFC 2119** — Key words for use in RFCs to Indicate Requirement Levels
 - **YAML 1.2** — YAML Ain't Markup Language, yaml.org/spec/1.2/
+
+---
+
+# Agent Sommelier essh — Behavior Specification
+
+## Abstract
+
+`essh` is a portable SSH wrapper CLI providing name abstraction, agent authorization gating, profile portability, and ssh-agent lifecycle management. It uses filesystem semaphores for authorization and JSON for profile storage — no daemon, no database.
+
+## Terminology
+
+| Term | Definition |
+|---|---|
+| profile | A saved host definition: name, user, host, port, key path |
+| request lock | A pending authorization file that blocks agent SSH |
+| export archive | A `.tar.gz` bundle of profiles, keys, and known_hosts entries |
+| TTY | Interactive terminal; detected via `sys.stdin.isatty()` |
+
+## System Model
+
+### Actors
+
+- **User** — Invokes `essh` interactively with a TTY.
+- **Agent** — Invokes `essh` programmatically without a TTY (blocked unless authorized).
+
+### Storage
+
+| File | Contents |
+|---|---|
+| `~/.essh/profiles.json` | Array of profile objects |
+| `~/.essh/keys/{name}/id_ed25519` | Private key for the named host |
+| `~/.essh/keys/{name}/id_ed25519.pub` | Public key for the named host |
+| `~/.essh/requests/{name}.pending` | Authorization request lock file |
+| `~/.essh/exports/` | Output directory for export archives |
+
+### Profile Model
+
+```json
+{
+  "name": "lenny",
+  "user": "root",
+  "host": "1.2.3.4",
+  "port": 2222,
+  "key_path": "~/.essh/keys/lenny/id_ed25519"
+}
+```
+
+## Behavioral Specification
+
+### 1. `essh add USER@HOST[:PORT]` or `essh add NAME USER@HOST[:PORT]`
+
+NAME is optional. When omitted, the system MUST auto-generate a name.
+
+**Name validation:**
+
+MUST:
+1. Only allow characters `[a-z]`, `[0-9]`, `-`, `_`.
+2. Reject names containing uppercase letters, spaces, dots, or any other ASCII character.
+3. Reject with a clear error message listing the allowed character set.
+4. Auto-generated names MUST always pass validation.
+
+**Name auto-generation:**
+
+When NAME is not provided, the system MUST:
+1. Pick a random color from a curated list (e.g. `blue`, `red`, `amber`, `jade`, `coral`).
+2. Pick a random animal from a curated list (e.g. `whale`, `falcon`, `otter`, `gecko`, `puma`).
+3. Combine as `{color}-{animal}` (lowercase, hyphen-separated).
+4. If the generated name collides with an existing profile, append a 3-character hex suffix: `{color}-{animal}-{hex}` (e.g. `blue-whale-a3f`).
+5. Retry with a new suffix if the suffixed name also collides (up to 10 attempts, then error).
+
+**Profile creation:**
+
+MUST:
+1. Parse `USER@HOST[:PORT]` — port defaults to 22.
+2. If NAME was provided: validate it; if a profile with NAME already exists, reject with error.
+3. Generate directory `~/.essh/keys/{name}/`.
+4. If `-i KEY` is provided, copy the specified keypair into the keys directory.
+5. Otherwise, generate a new ed25519 keypair via `ssh-keygen -t ed25519 -f {key_path} -N "" -C "essh:{name}"`.
+6. Run the ssh-copy-id equivalent: pipe the public key into `ssh -p {port} {user}@{host} "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"`. The user is prompted for the remote password once.
+7. On success, save the profile to `profiles.json`.
+8. On failure, clean up generated keypair and report error.
+
+### 2. `essh NAME [COMMAND]`
+
+MUST:
+
+1. Look up NAME in `profiles.json`. If not found, list known names and exit 1.
+2. Detect TTY: check `sys.stdin.isatty()`.
+3. **If TTY is present (interactive):** connect immediately via `ssh -i {key_path} -p {port} {user}@{host} [COMMAND]`.
+4. **If TTY is absent (agent):**
+   a. Create `~/.essh/requests/{name}.pending` with timestamp.
+   b. If a pending file already exists and is younger than 30 seconds, exit with "Request already pending" error.
+   c. Poll every 500ms: if the file is deleted, proceed with SSH. If 30 seconds elapse, exit with "Authorization timeout" error.
+   d. On authorization, delete any stale pending file and proceed with SSH.
+
+5. Before connecting, ensure the profile's key is added to `ssh-agent`:
+   a. Check if `ssh-agent` is running via `SSH_AUTH_SOCK` env var.
+   b. If not running, start it: `eval $(ssh-agent -s)`.
+   c. Check if the key is already loaded: `ssh-add -l | grep {key_path}`.
+   d. If not loaded, run `ssh-add {key_path}` (may prompt for passphrase).
+6. Build SSH args: `[-i key_path] [-p port] [user@host] [command]`.
+7. Execute SSH and forward the exit code.
+
+### 3. `essh authorize NAME`
+
+MUST:
+
+1. Look up NAME in `profiles.json`. If not found, exit 1.
+2. Check for `~/.essh/requests/{name}.pending`.
+3. If no pending request, report "No pending request for {name}" and exit 0.
+4. Delete the pending file.
+5. Report "{name} authorized."
+
+### 4. `essh list [--json]`
+
+MUST:
+
+1. Read `profiles.json`.
+2. Human-readable: table with columns Name, User, Host, Port, Key.
+3. `--json`: raw JSON array output.
+
+### 5. `essh rm NAME`
+
+MUST:
+
+1. Remove the profile from `profiles.json`.
+2. Delete the key directory `~/.essh/keys/{name}/`.
+3. Clean any stale pending requests for the name.
+
+### 6. `essh export [OUTPUT]`
+
+MUST:
+
+1. Default OUTPUT to `~/.essh/exports/essh-export-{YYYYMMDD_HHMMSS}.tar.gz`.
+2. Create a temp directory.
+3. Copy `profiles.json` into the temp directory.
+4. Copy all `~/.essh/keys/` directories into the temp directory.
+5. Extract `known_hosts` entries for all managed hosts.
+6. Create a `.tar.gz` archive.
+7. Clean up temp directory.
+8. Print the output path.
+
+### 7. `essh import ARCHIVE`
+
+MUST:
+
+1. Validate ARCHIVE exists and is a `.tar.gz`.
+2. Extract to a temp directory.
+3. Read the imported `profiles.json`.
+4. For each imported profile:
+   a. If name already exists and `--force` is not set, skip with warning.
+   b. If `--force`, overwrite the existing profile and keypair.
+   c. Copy keypair into `~/.essh/keys/{name}/`.
+5. Merge imported `known_hosts` entries into the local `known_hosts`.
+6. Clean up temp directory.
+7. Report number of profiles imported/skipped.
+
+## Authorization Model Detail
+
+The authorization gate is a filesystem semaphore:
+
+```
+Agent process                    User process
+  |                                |
+  |-- create {name}.pending        |
+  |-- poll every 500ms             |
+  |   (file exists? keep waiting)  |
+  |                                |-- essh authorize {name}
+  |                                |-- delete {name}.pending
+  |-- file deleted!                |
+  |-- proceed with SSH             |
+```
+
+**Expiry:** If `{name}.pending` is older than 30 seconds, the agent SHOULD delete it and exit with a timeout error. This prevents permanent hangs if the user never authorizes.
+
+**Concurrent requests:** The pending file contains a timestamp. If a new agent request arrives while one is already pending (and not expired), it MUST NOT create a second pending file — it exits with "Request already pending."
+
+## Error Handling
+
+| Scenario | Behavior |
+|---|---|
+| Unknown host name | Error with known names list, exit 1 |
+| Add duplicate name | Error, name already exists, exit 1 |
+| Invalid name characters | Error, allowed chars: a-z, 0-9, -, _. exit 1 |
+| Auto-gen collision (10 attempts) | Error, exit 1 |
+| Request already pending | Error with hint, exit 1 |
+| Authorization timeout | Error, exit 1 |
+| SSH connection fails | Forward SSH exit code |
+| No native SSH on Windows | Error with install hint, exit 1 |
+| Import name conflict | Warning, skip, unless `--force` |
+| Missing export archive | Error, exit 1 |
+
+## Security Considerations
+
+`essh` is **not a real security tool**. It provides guardrails + convenience:
+
+- Keys are stored in `~/.essh/keys/` with standard filesystem permissions.
+- The authorization gate is a filesystem semaphore — any process with filesystem access can bypass it.
+- `known_hosts` uses the system's native `~/.ssh/known_hosts` — no isolation from other SSH users.
+- If an attacker has user-level privileges on your machine, `essh` provides no meaningful defense.
+
+The authorization gate exists solely to prevent accidental agent foot-guns — not to defend against adversaries.

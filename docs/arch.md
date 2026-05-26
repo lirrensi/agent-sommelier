@@ -14,6 +14,7 @@ agent-sommelier/
 │   ├── bg.py                # Background job manager
 │   ├── crony.py             # Cron job scheduler
 │   ├── screenshot.py        # Screen capture
+│   ├── essh.py              # Portable SSH wrapper
 │   ├── skill_store/          # Skill registry (CLI + MCP)
 │   │   ├── __init__.py
 │   │   ├── core.py
@@ -722,12 +723,282 @@ screenshot_mss(output_path) -> bool
 
 ---
 
+## Component: essh
+
+### File
+`src/agent_sommelier/essh.py`
+
+### Entry Point
+```python
+essh = "agent_sommelier.essh:main"
+```
+
+### Commands
+- `essh add NAME USER@HOST[:PORT]` — Save a new host profile and push key
+- `essh NAME [COMMAND]` — Connect or run command (gated for non-TTY)
+- `essh authorize NAME` — Authorize a pending agent request
+- `essh list [--json]` — List saved profiles
+- `essh rm NAME` — Remove a profile and its keys
+- `essh export [OUTPUT]` — Export profiles to portable archive
+- `essh import ARCHIVE` — Import profiles from archive
+
+### Storage
+```
+~/.essh/
+├── profiles.json       # Array of profile objects
+├── keys/
+│   └── {name}/
+│       ├── id_ed25519       # Private key
+│       └── id_ed25519.pub   # Public key
+├── requests/
+│   └── {name}.pending       # Authorization request lock (contains timestamp)
+└── exports/
+    └── essh-export-*.tar.gz # Portable export archives
+```
+
+### Profile JSON Schema
+```json
+{
+  "name": "lenny",
+  "user": "root",
+  "host": "1.2.3.4",
+  "port": 2222,
+  "key_path": "~/.essh/keys/lenny/id_ed25519"
+}
+```
+
+### Implementation Flow
+
+#### `essh add`
+```
+add_profile(name, target, key_override=None)
+    |
+    +-- if name not provided:
+    |       name = generate_name()
+    |       |
+    |       +-- pick random color from COLORS list
+    |       +-- pick random animal from ANIMALS list
+    |       +-- combine: "{color}-{animal}"
+    |       +-- if collision: append "-{hex3}" suffix, retry up to 10x
+    |
+    +-- validate_name(name)
+    |       |
+    |       +-- allowed: [a-z], [0-9], -, _
+    |       +-- reject uppercase, spaces, special chars, dots
+    |
+    +-- parse_target("root@1.2.3.4:2222") --> user, host, port
+    |
+    +-- if profile_exists(name): error
+    |
+    +-- mkdir ~/.essh/keys/{name}/
+    |
+    +-- if key_override:
+    |       copy_keypair(override, ~/.essh/keys/{name}/)
+    |
+    +-- else:
+    |       ssh-keygen -t ed25519 -f ~/.essh/keys/{name}/id_ed25519 -N "" -C "essh:{name}"
+    |
+    +-- ssh_copy_id(user, host, port, pubkey_path)
+    |       |
+    |       +-- read public key
+    |       +-- build remote cmd: mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys
+    |       +-- pipe key into: ssh -p {port} {user}@{host} {remote_cmd}
+    |       +-- interactive (user enters password once)
+    |
+    +-- save profile to profiles.json
+    +-- on failure: cleanup key dir, report error
+```
+
+### Name Generation
+
+Two curated word lists are inlined in the module:
+
+**Colors (~30):** amber, apricot, aqua, azure, black, blue, bronze, brown, charcoal, cobalt, copper, coral, crimson, cyan, emerald, gold, gray, green, indigo, ivory, jade, lavender, lime, magenta, maroon, mint, navy, olive, orange, peach, pink, plum, purple, red, rose, ruby, rust, salmon, sapphire, scarlet, silver, tan, teal, turquoise, violet, white, yellow
+
+**Animals (~60):** alpaca, badger, bat, bear, bee, bison, boar, bobcat, butterfly, camel, cat, cheetah, cobra, cougar, cow, coyote, crab, crane, crow, deer, dingo, dog, dolphin, dove, dragonfly, duck, eagle, eel, elephant, elk, falcon, ferret, finch, fish, flamingo, fox, frog, gazelle, gecko, giraffe, goat, goose, gorilla, hawk, hedgehog, heron, horse, hummingbird, hyena, ibex, iguana, jackal, jaguar, kangaroo, koala, lemur, leopard, lion, lizard, llama, lobster, lynx, magpie, meerkat, mole, mongoose, monkey, moose, moth, mouse, mule, narwhal, newt, octopus, okapi, orangutan, orca, ostrich, otter, owl, panda, panther, parrot, peacock, pelican, penguin, pheasant, pigeon, platypus, pony, porcupine, puma, quail, rabbit, raccoon, ram, rat, raven, reindeer, rhino, robin, salamander, seahorse, seal, shark, sheep, skunk, sloth, snail, snake, sparrow, spider, squid, squirrel, starfish, stork, swallow, swan, swordfish, tiger, toad, tortoise, toucan, trout, turkey, turtle, viper, vulture, wallaby, walrus, wasp, weasel, whale, wolf, wombat, woodpecker, yak, zebra
+
+Name generation uses `random.choice()` from each list. The full 30×140 combination space (4200+ unique names before any suffix is needed) makes collisions extremely rare in practice.
+
+### Name Validation
+
+```
+validate_name(name) -> None | raises ClickException
+    |
+    +-- regex: ^[a-z0-9_-]+$
+    +-- rejects uppercase, spaces, dots, special chars
+    +-- error message lists allowed character set
+```
+
+#### `essh NAME [COMMAND]` (connect/run)
+```
+connect(name, command=None)
+    |
+    +-- resolve_profile(name) --> profile or error
+    |
+    +-- detect_tty()
+    |       |
+    |       +-- sys.stdin.isatty() --> interactive
+    |       +-- not isatty() --> agent mode
+    |
+    +-- [agent mode] wait_for_authorization(name)
+    |       |
+    |       +-- check for existing pending file
+    |       |       |
+    |       |       +-- exists & younger than 30s: error "already pending"
+    |       |       +-- exists & older than 30s: cleanup, create new
+    |       |       +-- not exists: create new
+    |       |
+    |       +-- write ~/.essh/requests/{name}.pending (timestamp only)
+    |       |
+    |       +-- poll loop (500ms intervals):
+    |       |       |
+    |       |       +-- file deleted? --> authorized, proceed
+    |       |       +-- 30s elapsed? --> timeout error
+    |       |
+    |
+    +-- ensure_ssh_agent(key_path)
+    |       |
+    |       +-- if not SSH_AUTH_SOCK:
+    |       |       start ssh-agent, export env vars
+    |       |
+    |       +-- if key not in ssh-add -l:
+    |       |       ssh-add {key_path} (may prompt for passphrase)
+    |       |
+    |
+    +-- build_ssh_args(profile, command)
+    |       |
+    |       +-- args = ["-i", key_path, "-p", str(port)]
+    |       +-- if command: args.extend([f"{user}@{host}", command])
+    |       +-- else: args.extend([f"{user}@{host}"])
+    |
+    +-- os.execvp("ssh", args) or subprocess.run()
+    |
+    +-- forward SSH exit code
+```
+
+#### `essh authorize NAME`
+```
+authorize(name)
+    |
+    +-- resolve_profile(name) --> profile or error
+    |
+    +-- check ~/.essh/requests/{name}.pending
+    |       |
+    |       +-- not exists: "No pending request" (exit 0)
+    |       +-- exists: delete file, report "authorized"
+```
+
+#### `essh export`
+```
+export_profiles(output=None)
+    |
+    +-- output = default or user-provided path
+    |
+    +-- create temp dir
+    |
+    +-- copy profiles.json to temp
+    |
+    +-- copy ~/.essh/keys/ to temp/keys/
+    |
+    +-- extract known_hosts entries for managed hosts
+    |       |
+    |       +-- read ~/.ssh/known_hosts
+    |       +-- filter lines matching managed hosts/IPs
+    |       +-- write to temp/known_hosts
+    |
+    +-- create tar.gz archive from temp dir
+    |
+    +-- cleanup temp dir
+    |
+    +-- print output path
+```
+
+#### `essh import`
+```
+import_profiles(archive_path, force=False)
+    |
+    +-- validate archive exists, is .tar.gz
+    |
+    +-- extract to temp dir
+    |
+    +-- read temp/profiles.json
+    |
+    +-- for each profile:
+    |       |
+    |       +-- if name exists and not force: skip with warning
+    |       +-- if name exists and force: overwrite
+    |       +-- copy keys to ~/.essh/keys/{name}/
+    |       +-- add to profiles.json
+    |
+    +-- merge known_hosts entries
+    |       |
+    |       +-- read temp/known_hosts
+    |       +-- append unique lines to ~/.ssh/known_hosts
+    |
+    +-- cleanup temp dir
+    |
+    +-- report counts
+```
+
+### TTY Detection
+```
+detect_tty():
+    return sys.stdin.isatty() and sys.stdout.isatty()
+```
+Used to decide whether the connection is interactive (user at terminal) or agent-driven (no TTY, needs authorization).
+
+### SSH Agent Management
+
+`ensure_ssh_agent(key_path)` handles the full ssh-agent lifecycle:
+1. If `SSH_AUTH_SOCK` is not set in the environment, start `ssh-agent` and capture its output to set `SSH_AUTH_SOCK` and `SSH_AGENT_PID`.
+2. Run `ssh-add -l` to check if the key is already loaded (grep for key_path).
+3. If not loaded, run `ssh-add {key_path}` — this may prompt the user for a passphrase if the key has one.
+4. On Windows, prefer the native OpenSSH `ssh-agent` service which may already be running.
+
+### Platform SSH Detection
+
+```
+find_ssh() -> str:
+    |
+    +-- Windows:
+    |       |
+    |       +-- try: Get-Command ssh.exe (native OpenSSH)
+    |       +-- fallback: where ssh
+    |       +-- fallback: wsl ssh (WSL)
+    |       +-- none found: error with install hint
+    |
+    +-- Unix (Linux/macOS):
+            |
+            +-- which ssh (or /usr/bin/ssh)
+            +-- always found on standard installs
+```
+
+### Authorization Flow Diagram
+```
+Agent (no TTY)                    User (interactive)
+  |                                  |
+  | essh lenny "deploy.sh"           |
+  |                                  |
+  |-- create requests/lenny.pending  |
+  |-- poll (500ms)                   |
+  |   |                              |
+  |   | (waiting...)                 |
+  |   |                              |-- essh authorize lenny
+  |   |                              |-- delete requests/lenny.pending
+  |-- file gone!                     |
+  |-- proceed with SSH               |
+  |                                  |
+  | ssh -i ... root@host deploy.sh   |
+```
+
+---
+
 ## Dependencies Graph
 
 ```
 click >= 8.1.0          <-- All tools (CLI framework)
     |
-rich >= 13.0.0          <-- bg, crony, skill-store (table output)
+rich >= 13.0.0          <-- bg, crony, essh, skill-store (table output)
     |
 dateparser >= 1.2.0    <-- crony (optional, natural language)
     |

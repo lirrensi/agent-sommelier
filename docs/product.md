@@ -411,6 +411,133 @@ Take a screenshot.
 
 ---
 
+## Tool: essh — Portable SSH Wrapper
+
+Portable SSH wrapper CLI that makes SSH sane across Windows/WSL/Linux. Adds name abstraction, agent authorization gating, and cross-environment portability.
+
+### Commands
+
+#### `essh add USER@HOST[:PORT]` or `essh add NAME USER@HOST[:PORT]`
+
+Save a new SSH host profile.
+
+**Arguments:**
+- `USER@HOST[:PORT]` — SSH target, port defaults to 22 (always required)
+- `NAME` — Optional friendly name. If omitted, auto-generates Docker-style: `{color}-{animal}` (e.g. `blue-whale`, `red-falcon`). Collisions append a short hex suffix: `blue-whale-a3f`.
+
+**Name rules:**
+- Only `[a-z]`, `[0-9]`, `-`, `_` allowed. No uppercase, no spaces, no special characters.
+- Auto-generated names always pass validation; user-provided names are rejected with a clear error if invalid.
+
+**Behavior:**
+- Generates an ed25519 keypair for the host if none exists
+- Pushes the public key to the remote host via `ssh-copy-id` equivalent (password prompt once)
+- Saves the profile (name, user, host, port, key path) to `~/.essh/profiles.json`
+- If `-i KEY` is passed, uses the specified existing key instead of generating one
+
+#### `essh NAME [COMMAND]`
+
+Connect to a saved host or run a command.
+
+**Arguments:**
+- `NAME` — Friendly host name
+- `COMMAND` — Optional command to execute remotely
+
+**Behavior:**
+- Resolves NAME to the saved profile
+- If running from a context without a TTY (agent, script, cron), the request is **blocked** until authorized
+- If running interactively (has TTY), connects immediately
+- Ensures the key is added to `ssh-agent` before connecting
+
+#### `essh authorize NAME`
+
+Authorize a pending agent request for the named host.
+
+**Arguments:**
+- `NAME` — Friendly host name
+
+**Behavior:**
+- Clears the pending request lock for the named host
+- The blocked agent process proceeds with the SSH connection
+- Request locks auto-expire after 30 seconds to prevent permanent hangs
+
+#### `essh list [--json]`
+
+List all saved host profiles.
+
+**Options:**
+- `--json` — Output as JSON
+
+#### `essh rm NAME`
+
+Remove a saved host profile and its keypair.
+
+#### `essh export [OUTPUT]`
+
+Export all profiles, keys, and known_hosts to a portable archive.
+
+**Arguments:**
+- `OUTPUT` — Optional output path (defaults to `~/.essh/exports/essh-export-{timestamp}.tar.gz`)
+
+**Behavior:**
+- Bundles `profiles.json`, all managed keypairs, and `known_hosts` entries into a single `.tar.gz`
+- Archive is platform-agnostic — importable on Windows, WSL, or Linux
+
+#### `essh import ARCHIVE`
+
+Import profiles and keys from an export archive.
+
+**Arguments:**
+- `ARCHIVE` — Path to a `.tar.gz` export file
+
+**Behavior:**
+- Merges imported profiles with existing ones (refuses to overwrite by default)
+- Installs keypairs and merges `known_hosts` entries
+- `--force` flag to overwrite conflicts
+
+### Authorization Model
+
+The authorization gate is a **filesystem semaphore** — no daemon, no IPC.
+
+1. Agent runs `essh lenny "ls"` without a TTY
+2. A request file `~/.essh/requests/lenny.pending` is created
+3. The agent process blocks, polling the file
+4. User runs `essh lenny authorize` → deletes the pending file
+5. Agent sees the file is gone, proceeds with SSH
+6. If not authorized within 30 seconds, the request expires and agent exits with error
+
+**What it's NOT:** A real security tool. If someone has privileges on your machine, it's already over. This is guardrails + convenience — stops accidental agent foot-guns.
+
+### Storage
+
+| Location | Contents |
+|----------|----------|
+| `~/.essh/profiles.json` | Host profiles (name, user, host, port, key path) |
+| `~/.essh/keys/{name}/` | Per-host ed25519 keypairs |
+| `~/.essh/requests/` | Pending authorization request files |
+| `~/.essh/exports/` | Exported portable archives |
+
+### Edge Cases
+
+- Unknown host name: error with list of known names, exit 1
+- Request already pending: error with hint to authorize or wait, exit 1
+- SSH connection fails: error with exit code
+- `essh import` on existing profile: error unless `--force`
+- No native SSH found on Windows: error with install hint (OpenSSH Client via Windows Features)
+- Key not in ssh-agent: auto-adds before connecting (with passphrase prompt if needed)
+
+### Platform Notes
+
+| Platform | SSH Binary | Notes |
+|----------|-----------|-------|
+| Windows | `ssh.exe` (native OpenSSH) | Detects via `Get-Command ssh.exe`; falls back to WSL `ssh` |
+| WSL/Linux | `/usr/bin/ssh` | Standard OpenSSH |
+| macOS | `/usr/bin/ssh` | Standard OpenSSH |
+
+WSL can import exports directly from Windows paths: `essh import /mnt/c/Users/rx/.essh/exports/essh-export.tar.gz`
+
+---
+
 ## Tool: tasks — In-Repo Task Management
 
 Static, file-backed task tracking for project work. Lives in `.agents/tasks/` with no database or service, and preserves history across sessions.

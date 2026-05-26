@@ -9,6 +9,9 @@ Usage in opencode.json:
             "command": "skill-store-mcp"
         }
     }
+
+Shutdown (to release file locks before updating):
+    skill-store-mcp --shutdown
 """
 
 from __future__ import annotations
@@ -41,6 +44,58 @@ def _get_store_or_exit() -> Path:
     store = _resolve_store()
     ensure_store_initialized(store)
     return store
+
+
+# ---------------------------------------------------------------------------
+# Shutdown helper — release file locks before tool update
+# ---------------------------------------------------------------------------
+
+
+def _shutdown_mcp() -> None:
+    """Find and terminate any other running skill-store-mcp processes.
+
+    On Windows, running .exe shims lock the Scripts directory, which blocks
+    ``uv tool install --force``.  Run ``skill-store-mcp --shutdown`` before
+    updating to release those locks.
+    """
+    try:
+        import psutil
+    except ImportError:
+        print(
+            "psutil not available — cannot shut down MCP server automatically.",
+            file=sys.stderr,
+        )
+        print("Kill it manually, then retry the update.", file=sys.stderr)
+        sys.exit(1)
+
+    current = os.getpid()
+    targets: list[psutil.Process] = []
+
+    for proc in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            if proc.info["pid"] == current:
+                continue
+            cmdline = " ".join(proc.info.get("cmdline") or [])
+            if "skill-store-mcp" in cmdline:
+                targets.append(proc)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    for p in targets:
+        try:
+            p.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+    if targets:
+        gone, alive = psutil.wait_procs(targets, timeout=3)
+        for p in alive:
+            try:
+                p.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+    print(f"Stopped {len(targets)} skill-store-mcp process(es).")
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +308,9 @@ except ImportError:
 
     def main() -> None:
         """Entry point that tells the user to install mcp."""
+        if len(sys.argv) > 1 and sys.argv[1] == "--shutdown":
+            _shutdown_mcp()
+            return
         print("skill-store-mcp requires the 'mcp' package.", file=sys.stderr)
         print("Install with: uv tool install agent-sommelier-cli[mcp]", file=sys.stderr)
         print("        or: pip install agent-sommelier-cli[mcp]", file=sys.stderr)
@@ -261,7 +319,10 @@ except ImportError:
 else:
 
     def main() -> None:
-        """Run the MCP server on stdio transport."""
+        """Run the MCP server on stdio transport, or shut down running instances."""
+        if len(sys.argv) > 1 and sys.argv[1] == "--shutdown":
+            _shutdown_mcp()
+            return
         mcp.run()
 
 
