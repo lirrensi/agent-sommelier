@@ -555,6 +555,10 @@ def add_task(title: str, priority: int | str | None = None, tags: list[str] | No
              related: str | None = None, notes: str | None = None,
              evidence: str | None = None, order: int = 0,
              status: str | None = None) -> dict[str, Any]:
+    if not isinstance(title, str):
+        raise ValueError("Task title must be a string.")
+    if title.strip() == "":
+        raise ValueError("Task title cannot be empty.")
     _require_tasks_dir()
     s = _ensure_storage()
     meta = s.load_meta()

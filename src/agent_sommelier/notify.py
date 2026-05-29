@@ -11,15 +11,22 @@ import platform
 import subprocess
 import click
 
+from agent_sommelier import __version__
 
-def send_notification(title: str, body: str) -> bool:
+
+def send_notification(title: str, body: str, urgency: str | None = None, expire_time: int | None = None) -> bool:
     """Send a desktop notification using native OS tools."""
     system = platform.system()
 
     try:
         if system == "Linux":
             # Try notify-send (most common)
-            subprocess.run(["notify-send", title, body], check=True)
+            cmd = ["notify-send", title, body]
+            if urgency:
+                cmd.extend(["--urgency", urgency])
+            if expire_time is not None:
+                cmd.extend(["--expire-time", str(expire_time)])
+            subprocess.run(cmd, check=True)
         elif system == "Darwin":  # macOS
             # Use osascript for notifications
             script = f'display notification "{body}" with title "{title}"'
@@ -60,12 +67,17 @@ def send_notification(title: str, body: str) -> bool:
 
 
 @click.command()
+@click.version_option(__version__, prog_name="notify")
 @click.argument("title")
 @click.argument("body", required=False, default=None)
 @click.option(
     "--sound", is_flag=True, help="Play notification sound (platform dependent)"
 )
-def main(title: str, body: str | None, sound: bool):
+@click.option("--quiet", "-q", is_flag=True, help="Silent mode — no output on success")
+@click.option("--urgency", type=click.Choice(["low", "normal", "critical"]), default=None, help="Notification urgency (Linux only)")
+@click.option("--expire-time", type=int, default=None, help="Time in milliseconds before notification expires (Linux only)")
+def main(title: str, body: str | None, sound: bool, quiet: bool,
+         urgency: str | None, expire_time: int | None):
     """Send a desktop notification.
 
     TITLE: Notification title
@@ -88,8 +100,11 @@ def main(title: str, body: str | None, sound: bool):
         body = title
         title = "Notification"
 
-    success = send_notification(title, body)
-    if not success:
+    success = send_notification(title, body, urgency=urgency, expire_time=expire_time)
+    if success:
+        if not quiet:
+            click.echo("Notification sent.", err=True)
+    else:
         sys.exit(1)
 
 

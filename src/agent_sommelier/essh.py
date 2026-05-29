@@ -35,6 +35,8 @@ import click
 from rich.console import Console
 from rich.table import Table
 
+from agent_sommelier import __version__
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -406,6 +408,7 @@ class EsshGroup(click.Group):
 # ---------------------------------------------------------------------------
 
 @click.group(cls=EsshGroup, invoke_without_command=True)
+@click.version_option(__version__, prog_name="essh")
 @click.pass_context
 def main(ctx: click.Context) -> None:
     """Portable SSH wrapper for Agent Sommelier.
@@ -478,7 +481,10 @@ def validate_name(name: str) -> None:
     type=click.Path(exists=True, path_type=Path),
     help="Existing SSH identity (private key) to use instead of generating one.",
 )
-def add(first: str, second: str | None, name: str | None, identity: Path | None) -> None:
+@click.option("-y", "--yes", is_flag=True, help="Auto-approve key generation")
+@click.option("--non-interactive", is_flag=True, help="Fail fast with error instead of prompting")
+def add(first: str, second: str | None, name: str | None, identity: Path | None,
+        yes: bool, non_interactive: bool) -> None:
     """Save a new SSH host profile.
 
     \b
@@ -566,13 +572,19 @@ def add(first: str, second: str | None, name: str | None, identity: Path | None)
                 "key_path": "",  # means "use default SSH keys"
             }
         else:
-            # No working key — offer to generate one in ~/.ssh/
-            if sys.stdin.isatty():
+            # No working key — handle prompting
+            if non_interactive:
+                raise click.ClickException(
+                    "No working SSH key found. Use -i/--identity to provide one, "
+                    "or -y/--yes to auto-generate."
+                )
+
+            if yes or not sys.stdin.isatty():
+                generate = True
+            else:
                 generate = click.confirm(
                     "No existing key works. Generate one?", default=True
                 )
-            else:
-                generate = True
 
             if not generate:
                 raise click.ClickException(
@@ -809,6 +821,54 @@ def remove(name: str) -> None:
     pending_file.unlink(missing_ok=True)
 
     console.print(f"[green]Profile '{name}' removed.[/green]")
+
+
+# ---------------------------------------------------------------------------
+# edit
+# ---------------------------------------------------------------------------
+
+@main.command(name="edit")
+@click.argument("name")
+@click.option("--host", help="New hostname")
+@click.option("--port", type=int, help="New port")
+@click.option("--user", help="New username")
+@click.option("-i", "--identity", type=click.Path(exists=True, path_type=Path), help="New identity key path")
+@click.option("-n", "--new-name", help="Rename the profile")
+def edit_profile(name: str, host: str | None, port: int | None, user: str | None,
+                 identity: Path | None, new_name: str | None) -> None:
+    """Modify an existing SSH host profile.
+
+    Only the provided fields are updated. Unchanged fields keep their values.
+    """
+    validate_name(name)
+
+    profiles = load_profiles()
+    profile = find_profile(name)
+    if profile is None:
+        raise click.ClickException(f"Profile '{name}' not found.")
+
+    # Remove the old profile
+    profiles = [p for p in profiles if p.get("name") != name]
+
+    # Update fields
+    if new_name is not None:
+        validate_name(new_name)
+        profile["name"] = new_name
+    if host is not None:
+        profile["host"] = host
+    if port is not None:
+        profile["port"] = port
+    if user is not None:
+        profile["user"] = user
+    if identity is not None:
+        profile["key_path"] = str(identity.expanduser().resolve())
+
+    # Re-add with updated values
+    profiles.append(profile)
+    save_profiles(profiles)
+
+    display_name = new_name or name
+    console.print(f"[green]Profile '{display_name}' updated.[/green]")
 
 
 # ---------------------------------------------------------------------------

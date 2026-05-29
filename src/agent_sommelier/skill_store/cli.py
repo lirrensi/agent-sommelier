@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -223,43 +224,37 @@ def cmd_sync(ctx: click.Context) -> None:
 
 
 @click.command()
+@click.option("--slug", default=None, help="Skill slug (kebab-case, lowercase)")
+@click.option("--name", "skill_name", default=None, help="Human-readable name")
+@click.option("--description", default=None, help="One-line description")
+@click.option("--from-template", type=click.Path(exists=True, path_type=Path), help="Use a template SKILL.md file")
 @click.pass_context
-def cmd_create_new(ctx: click.Context) -> None:
-    """Interactive wizard to scaffold a new skill."""
+def cmd_create_new(ctx: click.Context, slug: str | None, skill_name: str | None,
+                   description: str | None, from_template: Path | None) -> None:
+    """Interactive wizard (or non-interactive with --slug, --name, --description) to scaffold a new skill."""
     store: Path = ctx.obj["store"]
     _check_store(store)
     index = load_index(store)
     existing_slugs = {s["slug"] for s in index["skills"]}
 
-    console.print("[bold]Creating a new skill[/]")
-    console.print(e("─", "-") * 40)
-
-    slug = ""
-    while True:
-        slug = click.prompt("  Slug", default="").strip()
+    # Non-interactive mode: use provided flags
+    if slug and skill_name and description:
         err = validate_slug(slug)
         if err:
-            console.print(f"  [red]{e('✗', 'x')}[/] {err}")
-            continue
+            console.print(f"[red]{e('✗', 'x')}[/] {err}")
+            sys.exit(1)
         if slug in existing_slugs:
-            console.print(f"  [red]{e('✗', 'x')}[/] Slug [bold]'{slug}'[/] already exists.")
-            continue
-        break
+            console.print(f"[red]{e('✗', 'x')}[/] Slug '{slug}' already exists.")
+            sys.exit(1)
 
-    name = click.prompt("  Name", default=slug.replace("-", " ").title()).strip()
-    if not name:
-        name = slug
+        skill_dir = store / SKILLS_DIR_NAME / slug
+        skill_dir.mkdir(parents=True, exist_ok=True)
 
-    description = click.prompt("  Description").strip()
-    while not description:
-        console.print(f"  [yellow]{e('⚠', '!')}[/] Description is required.")
-        description = click.prompt("  Description").strip()
-
-    skill_dir = store / SKILLS_DIR_NAME / slug
-    skill_dir.mkdir(parents=True, exist_ok=True)
-
-    skill_md_content = f"""---
-name: {name}
+        if from_template:
+            shutil.copy2(from_template, skill_dir / "SKILL.md")
+        else:
+            skill_md_content = f"""---
+name: {skill_name}
 version: 1
 description: {description}
 ---
@@ -276,7 +271,65 @@ description: {description}
 
 <!-- Step-by-step instructions -->
 """
-    (skill_dir / "SKILL.md").write_text(skill_md_content.lstrip(), encoding="utf-8")
+            (skill_dir / "SKILL.md").write_text(skill_md_content.lstrip(), encoding="utf-8")
+
+        console.print(f"[green]{e('✓', '+')}[/] Created skill at [bold]{skill_dir}[/]")
+        ctx.invoke(cmd_sync)
+        return
+
+    # Fall back to interactive mode
+    console.print("[bold]Creating a new skill[/]")
+    console.print(e("─", "-") * 40)
+
+    if slug is None:
+        slug = ""
+    while True:
+        slug = click.prompt("  Slug", default=slug).strip()
+        err = validate_slug(slug)
+        if err:
+            console.print(f"  [red]{e('✗', 'x')}[/] {err}")
+            continue
+        if slug in existing_slugs:
+            console.print(f"  [red]{e('✗', 'x')}[/] Slug [bold]'{slug}'[/] already exists.")
+            continue
+        break
+
+    skill_name = skill_name or click.prompt("  Name", default=slug.replace("-", " ").title()).strip()
+    if not skill_name:
+        skill_name = slug
+
+    description = description or ""
+    while not description:
+        if description:
+            break
+        console.print(f"  [yellow]{e('⚠', '!')}[/] Description is required.")
+        description = click.prompt("  Description").strip()
+
+    skill_dir = store / SKILLS_DIR_NAME / slug
+    skill_dir.mkdir(parents=True, exist_ok=True)
+
+    if from_template:
+        shutil.copy2(from_template, skill_dir / "SKILL.md")
+    else:
+        skill_md_content = f"""---
+name: {skill_name}
+version: 1
+description: {description}
+---
+
+## Overview
+
+<!-- Describe what this skill enables the agent to do -->
+
+## When to use
+
+<!-- When should the agent trigger this skill -->
+
+## Workflow
+
+<!-- Step-by-step instructions -->
+"""
+        (skill_dir / "SKILL.md").write_text(skill_md_content.lstrip(), encoding="utf-8")
 
     console.print(f"\n[green]{e('✓', '+')}[/] Created skill at [bold]{skill_dir}[/]")
     ctx.invoke(cmd_sync)
@@ -383,6 +436,58 @@ def cmd_preview(ctx: click.Context, slug: str) -> None:
 
     if len(lines) > 100:
         click.echo(f"... (truncated, {len(lines)} total lines)", err=True)
+
+
+# ---------------------------------------------------------------------------
+# COMMAND: edit
+# ---------------------------------------------------------------------------
+
+
+@click.command()
+@click.argument("slug")
+@click.pass_context
+def cmd_edit(ctx: click.Context, slug: str) -> None:
+    """Open a skill's SKILL.md in $EDITOR for editing.
+
+    After editing, auto-runs sync to update the index.
+    """
+    store: Path = ctx.obj["store"]
+    _check_store(store)
+    index = load_index(store)
+
+    skill = find_skill(index, slug)
+    if not skill:
+        console.print(f"[red]{e('✗', 'x')}[/] Skill [bold]'{slug}'[/] not found.")
+        suggestions = [s["slug"] for s in index["skills"] if slug in s["slug"]]
+        if suggestions:
+            console.print(f"   Did you mean: {', '.join(suggestions)}?")
+        else:
+            console.print(f"   Run [bold]skill-store list[/] to see available skills.")
+        sys.exit(1)
+
+    skill_path = store / skill["path"]
+    skill_md = skill_path / "SKILL.md"
+
+    if not skill_md.exists():
+        console.print(f"[red]{e('✗', 'x')}[/] No [bold]SKILL.md[/] found in [bold]{slug}[/].")
+        sys.exit(1)
+
+    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL")
+    if not editor:
+        if sys.platform == "win32":
+            editor = "notepad"
+        else:
+            console.print("[red]No $EDITOR set. Set the EDITOR environment variable or use VISUAL.[/red]")
+            sys.exit(1)
+
+    result = subprocess.run([editor, str(skill_md)])
+    if result.returncode != 0:
+        console.print(f"[red]Editor exited with code {result.returncode}.[/red]")
+        sys.exit(1)
+
+    # Sync after editing
+    console.print(f"[green]Edited, running sync...[/green]")
+    ctx.invoke(cmd_sync)
 
 
 # ---------------------------------------------------------------------------
@@ -513,36 +618,46 @@ def cmd_search(ctx: click.Context, query: str, json: bool) -> None:
         rg_used = bool(rg_data)
 
     # 3 --- Merge results ----------------------------------------------------
-    index_slugs = {r["slug"] for r in index_results}
+    slug_results: dict[str, dict[str, Any]] = {}
 
+    # Add rg results first (content matches are most relevant)
     for r in index_results:
-        if r["slug"] in rg_data:
-            r["matches"] = rg_data[r["slug"]]["matches"]
-            r["match_count"] = len(r["matches"])
+        slug_results[r["slug"]] = r
 
+    # Merge rg data — keep existing match_source (name/description) for
+    # index matches, only set "content" for rg-only matches.
     for slug, data in rg_data.items():
-        if slug not in index_slugs:
-            name = slug
-            desc = ""
-            vers = "1"
-            for s in index["skills"]:
-                if s["slug"] == slug:
-                    name = s["name"]
-                    desc = s.get("description", "")
-                    vers = s.get("version", "1")
-                    break
-            index_results.append({
+        if slug in slug_results:
+            # Upgrade match count / matches but keep original match_source
+            existing = slug_results[slug]
+            if not existing.get("matches"):
+                existing["matches"] = data.get("matches", [])
+            existing["match_count"] = max(
+                existing.get("match_count", 0) or 0,
+                data.get("match_count", 0) or 0,
+            )
+        else:
+            slug_results[slug] = {
                 "slug": slug,
-                "name": name,
-                "version": vers,
-                "description": desc,
+                "name": data.get("name", slug),
+                "description": "",
                 "match_source": "content",
-                "match_count": len(data["matches"]),
-                "matches": data["matches"],
-            })
+                "match_count": data.get("match_count", 1),
+                "matches": data.get("matches", []),
+            }
 
+    # Sort by: name matches first, then description, then content.
+    # Within each tier, sort by match count desc, then by name.
     _source_rank = {"name": 0, "description": 1, "content": 2}
-    index_results.sort(key=lambda r: (_source_rank.get(r["match_source"], 99), r["slug"]))
+    results = sorted(
+        slug_results.values(),
+        key=lambda r: (
+            _source_rank.get(r.get("match_source", ""), 99),
+            -(r.get("match_count", 0) or 0),
+            r.get("name", "").lower(),
+        ),
+    )
+    index_results = results
 
     # 4 --- Output -----------------------------------------------------------
     if not index_results:
@@ -1026,6 +1141,7 @@ cli.add_command(cmd_sync, "sync")
 cli.add_command(cmd_create_new, "create-new")
 cli.add_command(cmd_load, "load")
 cli.add_command(cmd_preview, "preview")
+cli.add_command(cmd_edit, "edit")
 cli.add_command(cmd_list, "list")
 cli.add_command(cmd_search, "search")
 cli.add_command(cmd_pin, "pin")

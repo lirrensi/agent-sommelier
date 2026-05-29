@@ -15,7 +15,11 @@
 </p>
 
 <p align="center">
-  <code>uv tool install "git+https://github.com/lirrensi/agent-sommelier"</code>
+  <code>uv tool install "git+https://github.com/lirrensi/agent-sommelier[all]"</code>
+</p>
+
+<p align="center">
+  The <code>[all]</code> extra installs all optional dependencies: crony, screenshot, web UI, and MCP server.
 </p>
 
 <br>

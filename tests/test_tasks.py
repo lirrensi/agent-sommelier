@@ -1666,11 +1666,11 @@ class TestDeps:
         result = runner.invoke(main, ["deps", "TSK-0001"])
         assert result.exit_code == 0
 
-    def test_dep_without_colon_defaults_to_relates(self, initted: Path, runner: CliRunner) -> None:
-        """--dep TSK-0001 (no type) defaults to relates type."""
-        runner.invoke(main, ["add", "Default relates", "--dep", "TSK-0001"])
+    def test_dep_without_colon_defaults_to_blocks(self, initted: Path, runner: CliRunner) -> None:
+        """--dep TSK-0001 (no type) defaults to blocks type."""
+        runner.invoke(main, ["add", "Default blocks", "--dep", "TSK-0001"])
         _, tasks = load_tasks_yaml()
-        assert tasks[0]["deps"] == [{"id": "TSK-0001", "type": "relates"}]
+        assert tasks[0]["deps"] == [{"id": "TSK-0001", "type": "blocks"}]
 
     def test_deps_error_before_init(self, tmp_cwd: Path, runner: CliRunner) -> None:
         """tasks deps shows helpful error before init."""

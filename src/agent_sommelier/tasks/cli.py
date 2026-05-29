@@ -16,6 +16,8 @@ from typing import Any
 import click
 from rich.table import Table
 
+from agent_sommelier import __version__
+
 from .core import (
     _collect_all_tags,
     _ensure_config,
@@ -50,6 +52,7 @@ from .render import _format_priority, console, render_overview
 
 
 @click.group()
+@click.version_option(__version__, prog_name="tasks")
 def main():
     """Lightweight task management for AI agents."""
     pass
@@ -90,7 +93,7 @@ def _parse_dep_option(dep_str: str) -> dict[str, str]:
     if ":" in dep_str:
         parts = dep_str.split(":", 1)
         return {"id": parts[0], "type": parts[1]}
-    return {"id": dep_str, "type": "relates"}
+    return {"id": dep_str, "type": "blocks"}
 
 
 @main.command()
@@ -100,7 +103,7 @@ def _parse_dep_option(dep_str: str) -> dict[str, str]:
 @click.option("--source", "-s", type=click.Choice(list(VALID_SOURCES)), default="agent", help="Source of the task")
 @click.option("--claimed", help="Who is actively working this task (non-empty = locked from ready/next queues)")
 @click.option("--created-by", "created_by", help="Who or what created this task (e.g. rx, agent, gmail-import)")
-@click.option("--dep", "deps", multiple=True, help="Dependency: id:type (e.g. TSK-0042:blocks, TSK-0017:relates)")
+@click.option("--dep", "deps", multiple=True, help="Dependency: id:type (e.g. TSK-0042:blocks, TSK-0017:relates). Defaults to blocks if no :type suffix.")
 @click.option("--related", "-r", help="Related task ID (shorthand for --dep id:relates)")
 @click.option("--notes", "-n", help="Freeform notes")
 @click.option("--evidence", "-e", help="Verification evidence / proof")
@@ -109,20 +112,24 @@ def add(title: str, tags: tuple[str, ...], priority: str | None, source: str,
         deps: tuple[str, ...], related: str | None, notes: str | None,
         evidence: str | None):
     """Create a new task. ID is auto-generated."""
-    parsed_deps = [_parse_dep_option(d) for d in deps] if deps else None
-    task = add_task(
-        title=title,
-        priority=priority,
-        tags=list(tags) if tags else None,
-        source=source,
-        claimed=claimed,
-        created_by=created_by,
-        deps=parsed_deps,
-        related=related,
-        notes=notes,
-        evidence=evidence,
-    )
-    click.echo(f"Created {task['id']}: {title}")
+    try:
+        parsed_deps = [_parse_dep_option(d) for d in deps] if deps else None
+        task = add_task(
+            title=title,
+            priority=priority,
+            tags=list(tags) if tags else None,
+            source=source,
+            claimed=claimed,
+            created_by=created_by,
+            deps=parsed_deps,
+            related=related,
+            notes=notes,
+            evidence=evidence,
+        )
+        click.echo(f"Created {task['id']}: {title}")
+    except ValueError as e:
+        click.echo(str(e), err=True)
+        sys.exit(1)
 
 
 @main.command("list")

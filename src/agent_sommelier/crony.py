@@ -23,11 +23,14 @@ import os
 import sys
 import json
 import shlex
+import shutil
 import subprocess
 import platform
 from pathlib import Path
 from datetime import datetime
 import click
+
+from agent_sommelier import __version__
 
 # Check for optional dependencies
 try:
@@ -35,7 +38,10 @@ try:
     from croniter import croniter
 except ImportError:
     click.echo("Error: crony requires extra dependencies.", err=True)
-    click.echo("Install with: uv tool install agent-sommelier-cli[crony]", err=True)
+    click.echo("Install with one of:", err=True)
+    click.echo("  pip install agent-sommelier-cli[crony]", err=True)
+    click.echo("  uv tool install agent-sommelier-cli[crony]", err=True)
+    click.echo("  uv tool install 'agent-sommelier-cli[crony]@git+https://github.com/lirrensi/agent-sommelier'", err=True)
     sys.exit(1)
 
 # Job storage directory
@@ -247,12 +253,15 @@ def interval_to_cron(interval: str) -> str:
     return interval
 
 
-def add_job(name: str, schedule: str, cmd: str, cron_expr: str | None = None) -> dict:
+def add_job(name: str, schedule: str, cmd: str, cron_expr: str | None = None, force: bool = False) -> dict:
     """Add a new cron job."""
     jobs = load_jobs()
 
     if name in jobs:
-        raise ValueError(f"Job '{name}' already exists. Use 'crony rm {name}' first.")
+        if not force:
+            raise ValueError(f"Job '{name}' already exists. Use 'crony rm {name}' first.")
+        # Remove old registration before re-adding
+        unregister_job(jobs[name])
 
     if cron_expr:
         # Validate: 5 space-separated fields
@@ -341,9 +350,51 @@ def register_job_crontab(job: dict):
 
 def register_job_at(job: dict):
     """Register one-off job with 'at' command (Linux/macOS)."""
-    # This is for one-off jobs
-    # TODO: Implement 'at' command scheduling
-    pass
+    # Check if 'at' is available
+    if not shutil.which("at"):
+        raise RuntimeError(
+            "The 'at' command is not available. Install it with:\n"
+            "  apt install at    (Debian/Ubuntu)\n"
+            "  brew install at   (macOS)"
+        )
+
+    cmd = job["cmd"]
+    name = job["name"]
+    next_run = job.get("next_run")
+
+    if not next_run:
+        raise RuntimeError(f"Job '{name}' has no next_run time")
+
+    # Parse the next_run time
+    try:
+        run_time = datetime.fromisoformat(next_run)
+    except ValueError:
+        raise RuntimeError(f"Cannot parse next_run time: {next_run}")
+
+    # Format for 'at' command
+    time_str = run_time.strftime("%H:%M %Y-%m-%d")
+
+    # Wrap command to log output and capture exit code
+    log_dir = CRONY_DIR / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / f"{name}.log"
+
+    # at accepts the command via stdin
+    at_cmd = f"{cmd}\n"
+
+    proc = subprocess.run(
+        ["at", time_str],
+        input=at_cmd,
+        capture_output=True,
+        text=True,
+    )
+
+    if proc.returncode != 0:
+        raise RuntimeError(f"Failed to schedule 'at' job: {proc.stderr}")
+
+    # 'at' prints a line like "job 42 at Thu Mar 10 15:30:00 2026"
+    # Store this for later cancellation
+    return proc.stdout
 
 
 def register_job_task_scheduler(job: dict):
@@ -580,9 +631,19 @@ def sync_jobs() -> dict:
 
 
 @click.group()
-def main():
+@click.version_option(__version__, prog_name="crony")
+@click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
+@click.pass_context
+def main(ctx, verbose):
     """Cron job manager with natural language scheduling."""
-    pass
+    ctx.ensure_object(dict)
+    ctx.obj["verbose"] = verbose
+
+
+def _log(ctx, message: str):
+    """Print a timestamped verbose log line to stderr."""
+    if ctx.obj.get("verbose"):
+        click.echo(f"[{datetime.now().strftime('%H:%M:%S')}] {message}", err=True)
 
 
 @main.command()
@@ -590,7 +651,9 @@ def main():
 @click.argument("schedule")
 @click.argument("cmd")
 @click.option("--cron", is_flag=True, help="Treat schedule as a raw cron expression (5 fields)")
-def add(name: str, schedule: str, cmd: str, cron: bool):
+@click.option("--force", is_flag=True, help="Overwrite existing job with the same name")
+@click.pass_context
+def add(ctx, name: str, schedule: str, cmd: str, cron: bool, force: bool):
     """Add a new cron job.
 
     NAME: Job name (unique identifier)
@@ -606,13 +669,14 @@ def add(name: str, schedule: str, cmd: str, cron: bool):
         crony add report "every monday" "weekly-report.sh"
         crony add nightly "0 2 * * *" "backup.sh" --cron
     """
+    _log(ctx, f"add: {name} — schedule: {schedule}")
     try:
         if cron:
-            job = add_job(name, schedule, cmd, cron_expr=schedule)
+            job = add_job(name, schedule, cmd, cron_expr=schedule, force=force)
             click.echo(f"Added job: {name}")
             click.echo(f"  Schedule: {schedule} (recurring, raw cron)")
         else:
-            job = add_job(name, schedule, cmd)
+            job = add_job(name, schedule, cmd, force=force)
             click.echo(f"Added job: {name}")
             click.echo(f"  Schedule: {schedule} ({job['type']})")
             if job.get("cron_expr"):
@@ -625,11 +689,13 @@ def add(name: str, schedule: str, cmd: str, cron: bool):
 @main.command("list")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.option("--sync", is_flag=True, help="Force sync with OS scheduler")
-def list_cmd(json_output: bool, sync: bool):
+@click.pass_context
+def list_cmd(ctx, json_output: bool, sync: bool):
     """List all cron jobs.
 
     Automatically syncs with OS scheduler to recover orphaned tasks.
     """
+    _log(ctx, "list")
     # Always sync on list to auto-heal
     jobs = enrich_jobs(sync_jobs() if sync else load_jobs())
 
@@ -665,8 +731,10 @@ def list_cmd(json_output: bool, sync: bool):
 
 @main.command()
 @click.argument("name")
-def rm(name: str):
+@click.pass_context
+def rm(ctx, name: str):
     """Remove a cron job."""
+    _log(ctx, f"rm: {name}")
     if remove_job(name):
         click.echo(f"Removed job: {name}")
     else:
@@ -676,8 +744,10 @@ def rm(name: str):
 
 @main.command()
 @click.argument("name")
-def run(name: str):
+@click.pass_context
+def run(ctx, name: str):
     """Run a job immediately."""
+    _log(ctx, f"run: {name}")
     if run_job(name):
         click.echo(f"Triggered job: {name}")
     else:

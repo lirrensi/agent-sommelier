@@ -24,6 +24,8 @@ from pathlib import Path
 import click
 import psutil
 
+from agent_sommelier import __version__
+
 HAS_PSUTIL = hasattr(psutil, "Process")
 
 if not hasattr(click, "group"):
@@ -104,6 +106,10 @@ if not hasattr(click, "group"):
         command = staticmethod(_identity_decorator)
         option = staticmethod(_identity_decorator)
         argument = staticmethod(_identity_decorator)
+
+        @staticmethod
+        def version_option(*_args, **_kwargs):
+            return _identity_decorator
 
         @staticmethod
         def echo(message: str = "", err: bool = False):
@@ -279,6 +285,16 @@ def parse_iso_timestamp(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value)
     except ValueError:
         return None
+
+
+def _write_temp_script(content: str) -> Path:
+    """Write worker script to a temp file to avoid inline -c deadlocks on Windows."""
+    temp_dir = Path(tempfile.gettempdir()) / "agent_sommelier_workers"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    suffix = uuid.uuid4().hex[:12]
+    script_path = temp_dir / f"worker_{suffix}.py"
+    script_path.write_text(content, encoding="utf-8")
+    return script_path
 
 
 def calculate_elapsed_seconds(started_at: str | None) -> float | None:
@@ -1535,6 +1551,9 @@ def spawn_launch_pid_probe_for_job(
     )
     payload = {"uid": uid, "delay_seconds": delay_seconds}
 
+    # Write to temp script to avoid Windows lock on Scripts directory
+    script_path = _write_temp_script(probe_script)
+
     popen_kwargs: dict[str, object] = {
         "stdin": subprocess.PIPE,
         "stdout": subprocess.DEVNULL,
@@ -1549,7 +1568,7 @@ def spawn_launch_pid_probe_for_job(
         popen_kwargs["start_new_session"] = True
 
     proc = subprocess.Popen(
-        [sys.executable, "-c", probe_script],
+        [sys.executable, "-I", str(script_path)],
         **popen_kwargs,
     )
     try:
@@ -1608,6 +1627,9 @@ def spawn_launch_worker_for_job(
         "stderr_path": str(stderr_path),
     }
 
+    # Write to temp script to avoid Windows lock on Scripts directory
+    script_path = _write_temp_script(worker_script)
+
     popen_kwargs: dict[str, object] = {
         "stdin": subprocess.PIPE,
         "stdout": subprocess.DEVNULL,
@@ -1622,7 +1644,7 @@ def spawn_launch_worker_for_job(
         popen_kwargs["start_new_session"] = True
 
     proc = subprocess.Popen(
-        [sys.executable, "-c", worker_script],
+        [sys.executable, "-I", str(script_path)],
         **popen_kwargs,
     )
     try:
@@ -1714,10 +1736,26 @@ def kill_process(pid: int) -> None:
     try:
         if sys.platform == "win32":
             subprocess.run(
-                ["taskkill", "/F", "/PID", str(pid)], capture_output=True, check=False
+                ["taskkill", "/PID", str(pid)], capture_output=True, check=False
             )
         else:
             os.killpg(os.getpgid(pid), signal.SIGTERM)
+    except (OSError, ProcessLookupError):
+        pass
+
+
+def kill_process_force(pid: int) -> None:
+    """Force-kill a process using SIGKILL (Unix) or taskkill /F (Windows)."""
+    try:
+        if sys.platform == "win32":
+            subprocess.run(
+                ["taskkill", "/F", "/PID", str(pid)], capture_output=True, check=False
+            )
+        else:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
     except (OSError, ProcessLookupError):
         pass
 
@@ -1818,27 +1856,34 @@ def restart_job(job_ref: str) -> str:
 
 
 @click.group()
+@click.version_option(__version__, prog_name="bg")
 def main() -> None:
     """Background job manager."""
 
 
 @main.command()
-@click.argument("cmd")
-def run(cmd: str) -> None:
-    """Run a command in the background."""
+@click.argument("cmd", nargs=-1, required=True)
+def run(cmd: tuple[str, ...]) -> None:
+    """Run a command in the background. Arguments are joined with spaces."""
+    cmd_str = " ".join(cmd)
     try:
-        click.echo(create_job(cmd))
+        click.echo(create_job(cmd_str))
     except Exception as exc:  # pragma: no cover - surfaced to CLI
         raise click.ClickException(str(exc)) from exc
 
 
 @main.command("list")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
-def list_cmd(json_output: bool) -> None:
-    """List all background jobs."""
+@click.option("--wide", is_flag=True, help="Wider command column")
+@click.option("--format", "output_format", type=click.Choice(["table", "json"]), default="table", help="Output format")
+def list_cmd(json_output: bool, wide: bool, output_format: str) -> None:
+    """List all background jobs.
+
+    Use --wide to show longer commands, or --format json for machine-readable output.
+    """
     jobs = scan_jobs_from_disk()
 
-    if json_output:
+    if json_output or output_format == "json":
         click.echo(dump_json(jobs))
         return
 
@@ -1860,7 +1905,8 @@ def list_cmd(json_output: bool) -> None:
     table.add_column("PID", style="magenta")
     table.add_column("Started", style="dim")
     table.add_column("Elapsed", style="blue")
-    table.add_column("Command", style="white", max_width=40)
+    cmd_max_width = 120 if wide else 60
+    table.add_column("Command", style="white", max_width=cmd_max_width)
 
     for job in jobs:
         status = job["status"]
@@ -1871,6 +1917,7 @@ def list_cmd(json_output: bool) -> None:
             "completed": "green",
             "failed": "red",
             "stale": "magenta",
+            "stopped": "blue",
             "missing": "red",
             "corrupt": "red",
             "orphaned": "red",
@@ -1910,7 +1957,7 @@ def list_cmd(json_output: bool) -> None:
             str(job.get("pid") or "-"),
             (job.get("started_at") or "?")[:19],
             format_elapsed(job.get("elapsed_seconds")),
-            (job.get("cmd") or "?")[:40],
+            (job.get("cmd") or "?")[:cmd_max_width],
         )
 
     console.print(table)
@@ -2015,11 +2062,68 @@ def restart(job_ref: str) -> None:
     """Restart a job."""
     try:
         name = restart_job(job_ref)
-        click.echo(name)
+        # Get the updated job snapshot to show the new PID
+        snapshot = load_job_snapshot(job_ref, refresh_process=False)
+        pid = snapshot.get("pid", "?") if snapshot else "?"
+        click.echo(f"Restarted {name} (PID: {pid})")
     except click.ClickException:
         raise
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
+
+
+@main.command()
+@click.argument("job_ref")
+def stop(job_ref: str) -> None:
+    """Stop a background job. Preserves the record for read/logs."""
+    snapshot = load_job_snapshot(job_ref, refresh_process=False)
+    if snapshot is None:
+        click.echo(f"Job not found: {job_ref}", err=True)
+        sys.exit(1)
+    if snapshot.get("record_state") != "ok":
+        click.echo(f"Job record not available: {job_ref}", err=True)
+        sys.exit(1)
+
+    pid = snapshot.get("pid")
+    name = snapshot.get("name", job_ref)
+
+    if snapshot.get("process_state") == "alive" and isinstance(pid, int):
+        kill_process(pid)
+
+    # Update record status to "stopped" but keep all files
+    uid = str(snapshot["uid"])
+    meta = load_job_meta(uid)
+    if meta is not None:
+        write_job_event(uid, meta, "stopped", status="stopped")
+
+    click.echo(f"Stopped {name}")
+
+
+@main.command()
+@click.argument("job_ref")
+def kill(job_ref: str) -> None:
+    """Force-stop a background job. Preserves the record for read/logs."""
+    snapshot = load_job_snapshot(job_ref, refresh_process=False)
+    if snapshot is None:
+        click.echo(f"Job not found: {job_ref}", err=True)
+        sys.exit(1)
+    if snapshot.get("record_state") != "ok":
+        click.echo(f"Job record not available: {job_ref}", err=True)
+        sys.exit(1)
+
+    pid = snapshot.get("pid")
+    name = snapshot.get("name", job_ref)
+
+    if snapshot.get("process_state") == "alive" and isinstance(pid, int):
+        kill_process_force(pid)
+
+    # Update record status to "stopped" but keep all files
+    uid = str(snapshot["uid"])
+    meta = load_job_meta(uid)
+    if meta is not None:
+        write_job_event(uid, meta, "stopped", status="stopped")
+
+    click.echo(f"Killed {name}")
 
 
 @main.command()
