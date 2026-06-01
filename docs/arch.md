@@ -741,6 +741,7 @@ essh = "agent_sommelier.essh:main"
 - `essh rm NAME` — Remove a profile and its keys
 - `essh export [OUTPUT]` — Export profiles to portable archive
 - `essh import ARCHIVE` — Import profiles from archive
+- `essh filter add|rm|list|clear TARGET PATTERN` — Manage command filter rules
 
 ### Storage
 ```
@@ -750,6 +751,7 @@ essh = "agent_sommelier.essh:main"
 │   └── {name}/
 │       ├── id_ed25519       # Private key
 │       └── id_ed25519.pub   # Public key
+├── filters.json          # Global command filter rules
 ├── requests/
 │   └── {name}.pending       # Authorization request lock (contains timestamp)
 └── exports/
@@ -1144,6 +1146,80 @@ scp/rsync command (ctx.args)
 | `rsync` | `essh rsync [RSYNC_OPTIONS...] SOURCE DEST` — uses `context_settings={"ignore_unknown_options": True, "allow_extra_args": True}` |
 
 Both commands use `@click.pass_context` and read raw args from `ctx.args`, bypassing Click's option parsing so that all scp/rsync flags pass through transparently.
+
+### Command Filters (allow/ask/deny)
+Filters use last-match-wins evaluation against wildcard patterns ported from
+anomalyco/opencode. Global rules are loaded from `~/.essh/filters.json`,
+per-profile rules from the profile's `filters` key. Per-profile overrides global.
+
+```
+connect(name, remote_command)
+  |-- ... existing auth gate ...
+  |-- if remote_command:
+  |     |-- load global rules + profile rules (merged, profile last)
+  |     |-- evaluate "bash" + command_str against rules
+  |     |   |-- deny → print msg, exit 1
+  |     |   |-- ask → TTY: click.confirm()
+  |     |   |         non-TTY: create_pending_request(name, command)
+  |     |   |                   wait_for_authorization(name)
+  |     |   |-- allow → pass through
+  |     +-- _run_ssh(...)
+```
+
+**New functions:**
+
+| Function | Purpose |
+|---|---|
+| `_wildcard_match(input, pattern)` | Match command against wildcard pattern |
+| `_load_global_filters()` | Load `~/.essh/filters.json` → rule list |
+| `_load_profile_filters(profile)` | Extract per-profile filter rules |
+| `_evaluate_filters(perm, cmd, rules)` | Last-match-wins evaluation → action |
+| `_action_message(perm, cmd, rules)` | Extract msg from last-matching rule |
+
+**New Click commands:**
+
+| Command | Purpose |
+|---|---|
+| `filter add` | `essh filter add TARGET PATTERN [--action deny|ask|allow]` |
+| `filter rm` | `essh filter rm TARGET PATTERN` |
+| `filter list` | `essh filter list TARGET` |
+| `filter clear` | `essh filter clear TARGET` |
+
+**Storage format** — global `~/.essh/filters.json`:
+```json
+{
+  "bash": {
+    "rm *": "ask",
+    "rm -rf *": "deny",
+    "sudo *": "ask"
+  }
+}
+```
+
+Per-profile in `profiles.json`:
+```json
+{
+  "name": "prod-web",
+  "filters": {
+    "bash": {
+      "sudo systemctl restart nginx": "allow",
+      "docker *": "ask"
+    }
+  }
+}
+```
+
+**Wildcard matching rules (port of anomalyco/opencode):**
+
+| Pattern | Input | Match? |
+|---|---|---|
+| `rm *` | `rm -rf /` | ✅ |
+| `rm *` | `rm` | ✅ (trailing ` *` makes args optional) |
+| `rm *` | `rmdir foo` | ❌ |
+| `git *` | `git status` | ✅ |
+| `git *` | `git` | ✅ |
+| `rm -rf *` | `rm -rf /` | ✅ |
+| `sudo systemctl restart nginx` | `sudo systemctl restart nginx` | ✅ |
 
 ---
 

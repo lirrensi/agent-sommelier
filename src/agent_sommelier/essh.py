@@ -15,6 +15,7 @@ Usage:
     essh list [--json]
     essh rm NAME
     essh edit NAME [--host|--port|--user|--identity|--new-name]
+    essh filter add|rm|list|clear TARGET PATTERN [--action deny|ask|allow]
     essh export [OUTPUT]
     essh import ARCHIVE [--force]
 """
@@ -50,10 +51,12 @@ KEYS_DIR = ESSH_DIR / "keys"
 REQUESTS_DIR = ESSH_DIR / "requests"
 EXPORTS_DIR = ESSH_DIR / "exports"
 KNOWN_HOSTS = Path.home() / ".ssh" / "known_hosts"
+FILTERS_FILE = ESSH_DIR / "filters.json"
 
 DEFAULT_PORT = 22
 AUTH_TIMEOUT = 30  # seconds
 AUTH_POLL_INTERVAL = 0.5  # seconds
+FILTER_ACTIONS = frozenset(["allow", "ask", "deny"])
 
 COLORS = [
     "amber", "apricot", "aqua", "azure", "black", "blue", "bronze", "brown",
@@ -89,6 +92,134 @@ ANIMALS = [
 NAME_PATTERN = re.compile(r"^[a-z0-9_-]+$")
 
 console = Console()
+
+
+# ---------------------------------------------------------------------------
+# Wildcard matching (ported from anomalyco/opencode)
+# ---------------------------------------------------------------------------
+def _wildcard_match(input_str: str, pattern: str) -> bool:
+    """Match ``input_str`` against a wildcard ``pattern``.
+
+    Rules:
+    - Backslashes normalize to forward slashes.
+    - ``*`` matches any sequence (``.*`` in regex).
+    - ``?`` matches any single char (``.`` in regex).
+    - All other regex special chars are escaped.
+    - Trailing `` *`` becomes ``( .*)?`` — the space+args are OPTIONAL,
+      so ``rm *`` matches ``rm`` AND ``rm -rf /`` but NOT ``rmdir``.
+    """
+    normalized = input_str.replace("\\", "/")
+    escaped = pattern.replace("\\", "/")
+    escaped = re.sub(r"[.+^${}()|[\]\\]", r"\\\g<0>", escaped)
+    escaped = escaped.replace("*", ".*").replace("?", ".")
+    if escaped.endswith(" .*"):
+        escaped = escaped[:-3] + "( .*)?"
+    return bool(re.match("^" + escaped + "$", normalized, re.DOTALL))
+
+def _ensure_filter_storage() -> None:
+    """Ensure the filter storage directory exists."""
+    ESSH_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Filter rule loading & evaluation
+# ---------------------------------------------------------------------------
+def _load_global_filters() -> list[dict]:
+    """Load global filter rules from ``~/.essh/filters.json``.
+
+    Expected format: ``{"bash": {"pattern": "action", ...}}``
+    Each entry becomes ``{"permission": "bash", "pattern": "...", "action": "..."}``.
+    Returns empty list if file missing or invalid.
+    """
+    if not FILTERS_FILE.exists():
+        return []
+    try:
+        data = json.loads(FILTERS_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    rules: list[dict] = []
+    for permission_key, actions in data.items():
+        if not isinstance(actions, dict):
+            continue
+        for pattern, value in actions.items():
+            if isinstance(value, dict):
+                action_str = str(value.get("action", "deny")).lower().strip()
+                msg = value.get("msg")
+            else:
+                action_str = str(value).lower().strip()
+                msg = None
+            if action_str not in FILTER_ACTIONS:
+                continue
+            rule: dict[str, object] = {
+                "permission": permission_key,
+                "pattern": pattern,
+                "action": action_str,
+            }
+            if msg:
+                rule["msg"] = str(msg)
+            rules.append(rule)
+    return rules
+
+def _load_profile_filters(profile: dict | None) -> list[dict]:
+    """Load per-profile filters from a profile dict.
+
+    Expects ``profile.get("filters", {})`` as either a dict or absent.
+    Same format as global: ``{"bash": {"pattern": "action", ...}}``
+    """
+    if not profile:
+        return []
+    raw = profile.get("filters")
+    if not isinstance(raw, dict):
+        return []
+    rules: list[dict] = []
+    for permission_key, actions in raw.items():
+        if not isinstance(actions, dict):
+            continue
+        for pattern, value in actions.items():
+            if isinstance(value, dict):
+                action_str = str(value.get("action", "deny")).lower().strip()
+                msg = value.get("msg")
+            else:
+                action_str = str(value).lower().strip()
+                msg = None
+            if action_str not in FILTER_ACTIONS:
+                continue
+            rule: dict[str, object] = {
+                "permission": permission_key,
+                "pattern": pattern,
+                "action": action_str,
+                "_source": "profile",
+            }
+            if msg:
+                rule["msg"] = str(msg)
+            rules.append(rule)
+    return rules
+
+def _evaluate_filters(permission: str, command: str, rules: list[dict]) -> str:
+    """Evaluate ``command`` against consolidated ``rules`` using last-match-wins.
+
+    Returns ``"allow"``, ``"ask"``, or ``"deny"``. Default ``"allow"``.
+    """
+    result = "allow"
+    for rule in rules:
+        if rule.get("permission") != permission:
+            continue
+        if _wildcard_match(command, rule.get("pattern", "")):
+            result = rule.get("action", "allow")
+    return result
+
+def _action_message(permission: str, command: str, rules: list[dict]) -> str | None:
+    """Return the custom ``msg`` from the last-matching rule, if any."""
+    message: str | None = None
+    for rule in rules:
+        if rule.get("permission") != permission:
+            continue
+        if _wildcard_match(command, rule.get("pattern", "")):
+            if "msg" in rule:
+                message = str(rule["msg"])
+    return message
 
 
 # ---------------------------------------------------------------------------
@@ -327,8 +458,12 @@ def ensure_ssh_agent(key_path: Path, is_tty: bool = False) -> None:
 # Agent-mode authorization polling
 # ---------------------------------------------------------------------------
 
-def create_pending_request(name: str) -> None:
-    """Create (or refresh) a pending request file. Errors if too recent."""
+def create_pending_request(name: str, command: str | None = None) -> None:
+    """Create (or refresh) a pending request file. Errors if too recent.
+
+    When ``command`` is provided, it is included in the JSON payload so the
+    authorization step can display what command is being requested.
+    """
     ensure_dirs()
     pending_file = REQUESTS_DIR / f"{name}.pending"
 
@@ -341,7 +476,10 @@ def create_pending_request(name: str) -> None:
         # Stale — clean it up
         pending_file.unlink()
 
-    pending_file.write_text(datetime.now().isoformat(), encoding="utf-8")
+    payload: dict[str, object] = {"timestamp": datetime.now().isoformat()}
+    if command is not None:
+        payload["command"] = command
+    pending_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
 def wait_for_authorization(name: str) -> None:
@@ -430,6 +568,7 @@ def main(ctx: click.Context) -> None:
       export    Export profiles and keys to a tar.gz archive.
       import    Import profiles from a tar.gz archive.
       authorize Authorize a pending connection request.
+      filter    Manage command filter rules for SSH connections.
 
     \b
     Shortcut:
@@ -855,6 +994,43 @@ def connect(name: str, remote_command: tuple[str, ...]) -> None:
     if key_path:
         ensure_ssh_agent(key_path, is_tty)
 
+    # ---- Command filter evaluation ----
+    if remote_command:
+        command_str = " ".join(remote_command)
+        global_rules = _load_global_filters()
+        profile_rules = _load_profile_filters(profile)
+        all_rules = global_rules + profile_rules  # profile overrides (last-match-wins)
+        action = _evaluate_filters("bash", command_str, all_rules)
+
+        if action == "deny":
+            msg = _action_message("bash", command_str, all_rules)
+            msg = msg or "This command is blocked by a filter rule."
+            console.print(f"[red]❌ BLOCKED: {msg}[/red]")
+            console.print(f"[dim]  Command: {command_str}[/dim]")
+            sys.exit(1)
+
+        if action == "ask":
+            if is_tty:
+                console.print(f"[yellow]Command requires authorization:[/yellow]")
+                console.print(f"  [bold]{command_str}[/bold]")
+                try:
+                    click.confirm("Run this command?", default=True, abort=True)
+                except click.Abort:
+                    console.print("[red]Command cancelled.[/red]")
+                    sys.exit(1)
+            else:
+                create_pending_request(name, command=command_str)
+                try:
+                    wait_for_authorization(name)
+                    console.print(
+                        f"[green]Authorization granted for '{name}'.[/green]"
+                    )
+                except click.ClickException:
+                    console.print(
+                        f"[red]Authorization denied or timed out for '{name}'.[/red]"
+                    )
+                    raise
+
     # Build and run SSH
     exit_code = _run_ssh(user, host, port, key_path, list(remote_command), is_tty)
     sys.exit(exit_code)
@@ -911,8 +1087,201 @@ def authorize(name: str) -> None:
         console.print(f"No pending request for '{name}'.")
         return
 
+    # Read request details (backward compat: old format is plain text timestamp)
+    cmd: str | None = None
+    try:
+        raw = pending_file.read_text(encoding="utf-8")
+        payload = json.loads(raw)
+        if isinstance(payload, dict):
+            cmd = payload.get("command")
+    except (OSError, json.JSONDecodeError):
+        cmd = None
+
+    if cmd:
+        console.print(f"[yellow]Pending request for '{name}':[/yellow]")
+        console.print(f"  [bold]Command:[/bold] {cmd}")
+        if sys.stdin.isatty():
+            try:
+                click.confirm("Authorize?", default=True, abort=True)
+            except click.Abort:
+                console.print("[red]Authorization cancelled.[/red]")
+                return
+    else:
+        console.print(f"[yellow]Pending request for '{name}'.[/yellow]")
+
     pending_file.unlink()
     console.print(f"[green]'{name}' authorized.[/green]")
+
+
+# ---------------------------------------------------------------------------
+# filter group — manage command filter rules
+# ---------------------------------------------------------------------------
+@main.group(name="filter")
+def filter_group() -> None:
+    """Manage command filter rules for SSH connections.
+
+    Use ``essh filter add``, ``essh filter rm``, ``essh filter list``,
+    or ``essh filter clear`` with ``global`` (all profiles) or a profile name.
+    """
+
+@filter_group.command(name="add")
+@click.argument("target")
+@click.argument("pattern")
+@click.option("--action", type=click.Choice(["deny", "ask", "allow"]), default="deny", help="Filter action")
+@click.option("--message", "-m", default=None, help="Custom message (for deny/ask)")
+def filter_add(target: str, pattern: str, action: str, message: str | None) -> None:
+    """Add a filter rule.
+
+    TARGET is ``global`` for all profiles, or a saved profile name.
+    """
+    if target == "global":
+        _ensure_filter_storage()
+        rules = _load_global_filters()
+        rule: dict[str, str] = {"permission": "bash", "pattern": pattern, "action": action}
+        if message:
+            rule["msg"] = message
+        rules.append(rule)
+        # Serialize back to config format
+        config: dict[str, dict[str, object]] = {}
+        for r in rules:
+            perm = r.get("permission", "bash")
+            pat = r.get("pattern", "")
+            act = r.get("action", "deny")
+            msg = r.get("msg")
+            if msg:
+                config.setdefault(perm, {})[pat] = {"action": act, "msg": str(msg)}
+            else:
+                config.setdefault(perm, {})[pat] = act
+        FILTERS_FILE.write_text(json.dumps(config, indent=2), encoding="utf-8")
+        console.print(f"[green]Global filter added: {pattern} → {action}[/green]")
+    else:
+        validate_name(target)
+        profiles_list = load_profiles()
+        # Find profile within the loaded list (don't use find_profile which re-reads)
+        profile = next((p for p in profiles_list if p.get("name") == target), None)
+        if profile is None:
+            raise click.ClickException(f"Profile '{target}' not found.")
+        raw_filters: object = profile.get("filters", {})
+        filters_dict: dict[str, object] = raw_filters if isinstance(raw_filters, dict) else {}
+        bash_raw: object = filters_dict.get("bash", {})
+        bash_dict: dict[str, object] = bash_raw if isinstance(bash_raw, dict) else {}
+        if message:
+            bash_dict[pattern] = {"action": action, "msg": str(message)}
+        else:
+            bash_dict[pattern] = action
+        filters_dict["bash"] = bash_dict
+        profile["filters"] = filters_dict
+        save_profiles(profiles_list)
+        console.print(f"[green]Filter added for '{target}': {pattern} → {action}[/green]")
+
+@filter_group.command(name="rm")
+@click.argument("target")
+@click.argument("pattern")
+def filter_rm(target: str, pattern: str) -> None:
+    """Remove a filter rule by pattern."""
+    if target == "global":
+        rules = _load_global_filters()
+        before = len(rules)
+        rules = [r for r in rules if r.get("pattern") != pattern or r.get("permission") != "bash"]
+        removed = before - len(rules)
+        if removed == 0:
+            console.print(f"[yellow]No matching global rule found: {pattern}[/yellow]")
+            return
+        config: dict[str, dict[str, object]] = {}
+        for r in rules:
+            perm = r.get("permission", "bash")
+            pat = r.get("pattern", "")
+            act = r.get("action", "deny")
+            msg = r.get("msg")
+            if msg:
+                config.setdefault(perm, {})[pat] = {"action": act, "msg": str(msg)}
+            else:
+                config.setdefault(perm, {})[pat] = act
+        FILTERS_FILE.write_text(json.dumps(config, indent=2), encoding="utf-8")
+        console.print(f"[green]Removed {removed} global rule(s): {pattern}[/green]")
+    else:
+        validate_name(target)
+        profiles_list = load_profiles()
+        profile = next((p for p in profiles_list if p.get("name") == target), None)
+        if profile is None:
+            raise click.ClickException(f"Profile '{target}' not found.")
+        raw_filters: object = profile.get("filters", {})
+        filters_dict: dict[str, object] = raw_filters if isinstance(raw_filters, dict) else {}
+        if "bash" not in filters_dict:
+            console.print(f"[yellow]No filter rules for '{target}'.[/yellow]")
+            return
+        bash_raw: object = filters_dict.get("bash", {})
+        bash_dict: dict[str, object] = bash_raw if isinstance(bash_raw, dict) else {}
+        if pattern not in bash_dict:
+            console.print(f"[yellow]No matching rule for '{target}': {pattern}[/yellow]")
+            return
+        del bash_dict[pattern]
+        if bash_dict:
+            filters_dict["bash"] = bash_dict
+        else:
+            del filters_dict["bash"]
+        if filters_dict:
+            profile["filters"] = filters_dict
+        else:
+            profile.pop("filters", None)
+        save_profiles(profiles_list)
+        console.print(f"[green]Removed filter for '{target}': {pattern}[/green]")
+
+@filter_group.command(name="list")
+@click.argument("target")
+def filter_list(target: str) -> None:
+    """List all filter rules for a target."""
+    if target == "global":
+        rules = _load_global_filters()
+        console.print(f"[bold]Global filter rules:[/bold]")
+    else:
+        validate_name(target)
+        profile = find_profile(target)
+        if profile is None:
+            raise click.ClickException(f"Profile '{target}' not found.")
+        rules = _load_profile_filters(profile)
+        console.print(f"[bold]Filter rules for '{target}':[/bold]")
+
+    if not rules:
+        console.print("[dim]No rules defined.[/dim]")
+        return
+
+    for i, rule in enumerate(rules, 1):
+        action = rule.get("action", "?")
+        pattern = rule.get("pattern", "?")
+        msg = rule.get("msg", "")
+        action_colored = {
+            "allow": "[green]allow[/green]",
+            "ask": "[yellow]ask[/yellow]",
+            "deny": "[red]deny[/red]",
+        }.get(action, action)
+        line = f"  {i}. {pattern}  →  {action_colored}"
+        if msg:
+            line += f"  ({msg})"
+        console.print(line)
+
+@filter_group.command(name="clear")
+@click.argument("target")
+def filter_clear(target: str) -> None:
+    """Remove ALL filter rules for a target."""
+    if target == "global":
+        if not FILTERS_FILE.exists():
+            console.print("[yellow]No global filter file found.[/yellow]")
+            return
+        FILTERS_FILE.unlink()
+        console.print("[green]Global filter rules cleared.[/green]")
+    else:
+        validate_name(target)
+        profiles_list = load_profiles()
+        profile = next((p for p in profiles_list if p.get("name") == target), None)
+        if profile is None:
+            raise click.ClickException(f"Profile '{target}' not found.")
+        if "filters" not in profile:
+            console.print(f"[yellow]No filter rules for '{target}'.[/yellow]")
+            return
+        profile.pop("filters", None)
+        save_profiles(profiles_list)
+        console.print(f"[green]Filter rules cleared for '{target}'.[/green]")
 
 
 # ---------------------------------------------------------------------------

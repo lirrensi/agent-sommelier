@@ -552,6 +552,50 @@ essh rsync --progress ./build/ my-server:/srv/app/
 - Profile not found: error with known names list, exit 1
 - `rsync` binary not found: error with install hint, exit 1
 
+### Command Filters
+
+#### `essh filter add|rm|list|clear TARGET PATTERN [--action deny|ask|allow]`
+
+Manage command filter rules for SSH connections. Filters use wildcard matching
+to allow, ask, or deny specific commands.
+
+**Target:**
+- `global` — Applies to all profiles (stored in `~/.essh/filters.json`)
+- `{name}` — Applies to a specific profile (stored in the profile's `filters` key)
+
+**Actions:**
+- `--action deny` (default) — Hard block. Command is rejected immediately with a message.
+- `--action ask` — Blocks until the command is authorized (same mechanism as `essh authorize`).
+- `--action allow` — Passes through silently without prompting.
+
+**Pattern matching** (ported from opencode/anomalyco):
+- `*` matches any sequence of characters
+- `?` matches any single character
+- Trailing ` *` (space then star) makes arguments optional — `rm *` matches `rm` AND `rm -rf /`
+- Patterns are case-insensitive
+
+**Last-match-wins:** More specific rules placed after general ones override them.
+Per-profile rules are evaluated after global rules and take precedence.
+
+**Examples:**
+```
+essh filter add global "rm *" --action ask
+essh filter add global "rm -rf *" --action deny --message "No recursive force remove"
+essh filter add global "sudo *" --action ask
+essh filter add prod-web "sudo systemctl restart nginx" --action allow
+essh filter add prod-web "docker *" --action ask
+essh filter list global
+essh filter list prod-web
+essh filter rm global "rm *"
+essh filter clear prod-web
+```
+
+**Behavior in connect:**
+1. If no filters match, the existing authorization gate applies (non-TTY always gates).
+2. If a `deny` rule matches: hard block, exit 1, even after authorization.
+3. If an `ask` rule matches: creates a pending request showing the exact command.
+4. If an `allow` rule matches: command runs without additional prompting.
+
 ### Authorization Model
 
 The authorization gate is a **filesystem semaphore** — no daemon, no IPC.

@@ -298,6 +298,7 @@ All task data is stored as plain-text YAML in the project repository. No authent
 | request lock | A pending authorization file that blocks agent SSH |
 | export archive | A `.tar.gz` bundle of profiles, keys, and known_hosts entries |
 | TTY | Interactive terminal; detected via `sys.stdin.isatty()` |
+| filter rule | A glob-like pattern paired with allow/ask/deny action |
 
 ## System Model
 
@@ -509,6 +510,8 @@ Agent process                    User process
 | Missing export archive | Error, exit 1 |
 | `-i KEY` file not found | Error, exit 1 |
 | Key generation fails | Error with stderr, exit 1 |
+| Command blocked by deny filter | Custom or default message in red, exit 1 |
+| Command blocked by ask filter (non-TTY) | Pending request with command text, same timeout/cancel as authorization |
 
 ## Security Considerations
 
@@ -521,6 +524,70 @@ Agent process                    User process
 - If an attacker has user-level privileges on your machine, `essh` provides no meaningful defense.
 
 The authorization gate exists solely to prevent accidental agent foot-guns — not to defend against adversaries.
+
+### 10. `essh filter add TARGET PATTERN [--action deny|ask|allow]`
+
+MUST:
+
+1. Accept TARGET as either `global` or a valid profile name.
+2. Validate profile names with `validate_name()`.
+3. For `global`: store rules in `~/.essh/filters.json` as:
+   ```json
+   {"bash": {"pattern": "action", ...}}
+   ```
+4. For per-profile: store rules in `profile["filters"]` as:
+   ```json
+   {"bash": {"pattern": "action", ...}}
+   ```
+5. Append new rules to the end of the rules list (last-match-wins evaluation).
+6. Default action: `deny`.
+7. `--message` / `-m` stores an optional custom message shown on deny/ask.
+
+### 11. Command Filter Evaluation
+MUST:
+
+1. Only apply to `essh connect` (SSH command execution). NOT scp/rsync.
+2. Permission key is always `"bash"` (future scp/rsync filtering is a separate concern).
+3. Load global rules from `~/.essh/filters.json` if it exists.
+4. Load per-profile rules from `profile.get("filters", {})` if present.
+5. Merge them as a flat list with per-profile rules appended after global rules.
+6. Evaluate using **last-match-wins**: iterate all rules, the last matching rule determines the action.
+7. If no rule matches, fall back to `"allow"` (no additional gate beyond the existing auth gate).
+8. Implement wildcard matching per opencode/anomalyco rules:
+   - `*` → `.*`, `?` → `.`, other regex chars escaped
+   - Trailing `*` → `( .*)?` (space and rest optional)
+   - Anchored match
+9. On `"deny"`: print error message in red (custom msg or default), print command dimmed, exit 1.
+10. On `"ask"`:
+    - TTY mode: prompt with `click.confirm`.
+    - Non-TTY mode: call `create_pending_request(name, command=command_str)`, then `wait_for_authorization(name)`.
+11. On `"allow"`: proceed to SSH execution without additional prompts.
+
+### 12. `essh filter rm TARGET PATTERN`
+MUST:
+
+1. Remove the first rule matching the given pattern and permission.
+2. Report if no matching rule was found.
+
+### 13. `essh filter list TARGET`
+MUST:
+
+1. Print all rules for the target in order, numbered, with action and optional message.
+
+### 14. `essh filter clear TARGET`
+MUST:
+
+1. Remove ALL rules for the target. For `global`, delete the filters.json file.
+2. Report if no rules existed.
+
+### 15. Enhanced Authorization
+MUST:
+
+1. `essh authorize` reads the pending file as JSON.
+2. If the payload contains a `"command"` key, display the command to the user.
+3. In TTY mode, prompt for confirmation before authorizing.
+4. In non-TTY mode, proceed without prompt (backward compatible).
+5. Fall back gracefully if the pending file is the old plain-text format.
 
 ### 8. `essh scp [SCP_OPTIONS...] SOURCE DEST`
 
