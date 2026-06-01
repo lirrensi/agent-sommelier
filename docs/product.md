@@ -495,6 +495,63 @@ Import profiles and keys from an export archive.
 - Installs keypairs and merges `known_hosts` entries
 - `--force` flag to overwrite conflicts
 
+#### `essh scp [SCP_OPTIONS...] SOURCE DEST`
+
+Copy files using `scp` with saved profile names. Uses `NAME:path` instead of `user@host:path`.
+
+**Arguments:**
+- `SOURCE` — Source path, can be `NAME:path` (remote) or a local path
+- `DEST` — Destination path, can be `NAME:path` (remote) or a local path
+
+**Options:**
+- All standard scp options are passed through (e.g. `-r`, `-P`, `-C`, `-3`)
+
+**Behavior:**
+- Resolves `NAME:path` to the saved profile's `user@host:path`
+- Applies the profile's identity key (`-i`) and port (`-P`) automatically
+- If the profile has default keys mode (empty `key_path`), no `-i` flag is passed
+- In agent mode (non-TTY): requires authorization per host, same semaphore as `essh connect`
+
+**Examples:**
+```
+essh scp my-server:/var/log/app.log ./logs/
+essh scp ./deploy.sh my-server:/home/ubuntu/
+essh scp -r my-server:/etc/nginx/ ./backup/
+```
+
+**Edge Cases:**
+- Multiple remote hosts with different keys: warning issued, scp's single `-i` applies globally
+- Profile not found: error with known names list, exit 1
+- `scp` binary not found: error with install hint, exit 1
+
+#### `essh rsync [RSYNC_OPTIONS...] SOURCE DEST`
+
+Sync files using `rsync` with saved profile names. Uses `NAME:path` instead of `user@host:path`.
+
+**Arguments:**
+- `SOURCE` — Source path, can be `NAME:path` (remote) or a local path
+- `DEST` — Destination path, can be `NAME:path` (remote) or a local path
+
+**Options:**
+- All standard rsync options are passed through (e.g. `-avz`, `--progress`, `--delete`)
+
+**Behavior:**
+- Resolves `NAME:path` to the saved profile's `user@host:path`
+- Builds the SSH transport command (`-e "ssh -i KEY -p PORT"`) from the profile's settings
+- If the profile has default keys mode (empty `key_path`), the transport command uses plain `ssh`
+- In agent mode (non-TTY): requires authorization per host, same semaphore as `essh connect`
+
+**Examples:**
+```
+essh rsync -avz my-server:/var/www/ ./www-backup/
+essh rsync --progress ./build/ my-server:/srv/app/
+```
+
+**Edge Cases:**
+- Multiple remote hosts with different keys: only the first profile's key is used for the SSH transport, warning issued
+- Profile not found: error with known names list, exit 1
+- `rsync` binary not found: error with install hint, exit 1
+
 ### Authorization Model
 
 The authorization gate is a **filesystem semaphore** — no daemon, no IPC.

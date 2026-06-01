@@ -1209,3 +1209,318 @@ class TestBackwardCompat:
         result = runner.invoke(essh.main, ["export"])
         assert result.exit_code == 0, result.output
         assert "Exported to" in result.output
+
+
+# ===========================================================================
+# TRANSFER COMMAND TESTS (scp / rsync)
+# ===========================================================================
+
+
+class TestResolveTransferArgs:
+    """_resolve_transfer_args() -- resolves NAME:path patterns to user@host:path."""
+
+    def test_single_host_with_path(self, sample_profiles: list[dict]) -> None:
+        """NAME:path resolves to user@host:path."""
+        resolved, profiles = essh._resolve_transfer_args(["prod-web:/remote/file.txt"])
+        assert resolved == ["deploy@web.example.com:/remote/file.txt"]
+        assert "prod-web" in profiles
+        assert profiles["prod-web"]["user"] == "deploy"
+
+    def test_single_host_empty_path(self, sample_profiles: list[dict]) -> None:
+        """NAME: (empty path) resolves to user@host: (home dir)."""
+        resolved, profiles = essh._resolve_transfer_args(["prod-web:"])
+        assert resolved == ["deploy@web.example.com:"]
+        assert "prod-web" in profiles
+
+    def test_two_hosts(self, sample_profiles: list[dict]) -> None:
+        """Multiple NAME:path args all resolve."""
+        resolved, profiles = essh._resolve_transfer_args(["prod-web:file1", "dev-db:file2"])
+        assert resolved == ["deploy@web.example.com:file1", "admin@db.dev.local:file2"]
+        assert set(profiles.keys()) == {"prod-web", "dev-db"}
+
+    def test_plain_local_path_passthrough(self, sample_profiles: list[dict]) -> None:
+        """Plain local paths without NAME: prefix pass through unchanged."""
+        resolved, profiles = essh._resolve_transfer_args(["./local/file.txt"])
+        assert resolved == ["./local/file.txt"]
+        assert profiles == {}
+
+    def test_mixed_args(self, sample_profiles: list[dict]) -> None:
+        """Flags and local paths preserved, NAME:path resolved."""
+        resolved, profiles = essh._resolve_transfer_args(["-r", "prod-web:/remote", "./local/"])
+        assert resolved == ["-r", "deploy@web.example.com:/remote", "./local/"]
+        assert "prod-web" in profiles
+
+    def test_nonexistent_profile_raises(self, sample_profiles: list[dict]) -> None:
+        """Unknown profile name raises ClickException."""
+        with pytest.raises(click.ClickException, match="Profile 'nonexistent' not found"):
+            essh._resolve_transfer_args(["nonexistent:/path"])
+
+    def test_arg_without_colon_passthrough(self, sample_profiles: list[dict]) -> None:
+        """Arguments without a colon pass through unchanged."""
+        resolved, profiles = essh._resolve_transfer_args(["somearg"])
+        assert resolved == ["somearg"]
+        assert profiles == {}
+
+
+class TestRunScp:
+    """_run_scp() -- builds and executes scp command."""
+
+    def test_with_key_path(self, mock_subprocess_run: mock.MagicMock) -> None:
+        """Profile with key_path adds -i flag."""
+        mock_subprocess_run.return_value.returncode = 0
+        profiles = {"test": {"key_path": "/path/to/key", "port": 22}}
+        exit_code = essh._run_scp(["user@host:/remote", "./local/"], profiles, is_tty=False)
+        assert exit_code == 0
+        args = mock_subprocess_run.call_args[0][0]
+        assert args[0] == "scp"
+        assert "-i" in args
+        assert "/path/to/key" in args
+
+    def test_with_default_keys(self, mock_subprocess_run: mock.MagicMock) -> None:
+        """Profile with empty key_path omits -i."""
+        mock_subprocess_run.return_value.returncode = 0
+        profiles = {"test": {"key_path": "", "port": 22}}
+        essh._run_scp(["user@host:/remote", "./local/"], profiles, is_tty=False)
+        args = mock_subprocess_run.call_args[0][0]
+        assert "-i" not in args
+
+    def test_with_port(self, mock_subprocess_run: mock.MagicMock) -> None:
+        """Profile with non-default port adds -P and verifies command order."""
+        mock_subprocess_run.return_value.returncode = 0
+        profiles = {"test": {"key_path": "/path/to/key", "port": 2222}}
+        essh._run_scp(["user@host:/remote"], profiles, is_tty=False)
+        args = mock_subprocess_run.call_args[0][0]
+        assert "-i" in args
+        assert "/path/to/key" in args
+        assert "-P" in args
+        assert "2222" in args
+        # Verify order: scp -i key -P port ...resolved_args
+        i_idx = args.index("-i")
+        key_idx = args.index("/path/to/key")
+        P_idx = args.index("-P")
+        port_idx = args.index("2222")
+        resolved_idx = args.index("user@host:/remote")
+        assert i_idx < key_idx < P_idx < port_idx < resolved_idx
+
+    def test_non_tty_captures_output(self, mock_subprocess_run: mock.MagicMock) -> None:
+        """Non-TTY mode captures stdout/stderr and echoes stdout."""
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = "transferred\n"
+        mock_subprocess_run.return_value.stderr = ""
+        profiles = {"test": {"key_path": "", "port": 22}}
+        essh._run_scp(["a", "b"], profiles, is_tty=False)
+        call_kwargs = mock_subprocess_run.call_args[1]
+        assert call_kwargs.get("capture_output") is True
+
+    def test_tty_inherits_streams(self, mock_subprocess_run: mock.MagicMock) -> None:
+        """TTY mode passes stdin/stdout/stderr."""
+        mock_subprocess_run.return_value.returncode = 0
+        profiles = {"test": {"key_path": "", "port": 22}}
+        essh._run_scp(["a", "b"], profiles, is_tty=True)
+        call_kwargs = mock_subprocess_run.call_args[1]
+        assert call_kwargs["stdin"] == sys.stdin
+        assert call_kwargs["stdout"] == sys.stdout
+        assert call_kwargs["stderr"] == sys.stderr
+
+    def test_scp_not_found_raises(self) -> None:
+        """When scp is not on PATH, raises ClickException."""
+        with mock.patch.object(essh, "shutil") as mock_shutil:
+            mock_shutil.which.return_value = None
+            with pytest.raises(click.ClickException, match="scp not found"):
+                essh._run_scp(["a", "b"], {}, is_tty=False)
+
+
+class TestRunRsync:
+    """_run_rsync() -- builds and executes rsync command."""
+
+    def test_with_key_path(self, mock_subprocess_run: mock.MagicMock) -> None:
+        """Profile with key_path and port builds -e 'ssh -i KEY -p PORT'."""
+        mock_subprocess_run.return_value.returncode = 0
+        profiles = {"test": {"key_path": "/path/to/key", "port": 2222}}
+        essh._run_rsync(["-avz", "user@host:/remote", "./local/"], profiles, is_tty=False)
+        args = mock_subprocess_run.call_args[0][0]
+        assert args[0] == "rsync"
+        assert args[1] == "-e"
+        assert "ssh" in args[2]
+        assert "-i" in args[2]
+        assert "/path/to/key" in args[2]
+        assert "-p" in args[2]
+        assert "2222" in args[2]
+
+    def test_with_default_keys(self, mock_subprocess_run: mock.MagicMock) -> None:
+        """Profile with empty key_path, default port: -e 'ssh' only."""
+        mock_subprocess_run.return_value.returncode = 0
+        profiles = {"test": {"key_path": "", "port": 22}}
+        essh._run_rsync(["-avz", "a", "b"], profiles, is_tty=False)
+        args = mock_subprocess_run.call_args[0][0]
+        assert args[1] == "-e"
+        assert args[2] == "ssh"
+
+    def test_with_non_default_port(self, mock_subprocess_run: mock.MagicMock) -> None:
+        """Non-default port appears in -e ssh command."""
+        mock_subprocess_run.return_value.returncode = 0
+        profiles = {"test": {"key_path": "/path/to/key", "port": 2222}}
+        essh._run_rsync(["-avz", "a", "b"], profiles, is_tty=False)
+        args = mock_subprocess_run.call_args[0][0]
+        assert "-p" in args[2]
+        assert "2222" in args[2]
+
+    def test_default_port_omitted(self, mock_subprocess_run: mock.MagicMock) -> None:
+        """Port 22 is omitted from -e ssh command."""
+        mock_subprocess_run.return_value.returncode = 0
+        profiles = {"test": {"key_path": "/path/to/key", "port": 22}}
+        essh._run_rsync(["-avz", "a", "b"], profiles, is_tty=False)
+        args = mock_subprocess_run.call_args[0][0]
+        assert args[2] == "ssh -i /path/to/key"
+
+    def test_non_tty_captures_output(self, mock_subprocess_run: mock.MagicMock) -> None:
+        """Non-TTY mode captures stdout/stderr."""
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = "sent 100 bytes\n"
+        mock_subprocess_run.return_value.stderr = ""
+        profiles = {"test": {"key_path": "", "port": 22}}
+        essh._run_rsync(["a", "b"], profiles, is_tty=False)
+        call_kwargs = mock_subprocess_run.call_args[1]
+        assert call_kwargs.get("capture_output") is True
+
+    def test_rsync_not_found_raises(self) -> None:
+        """When rsync is not on PATH, raises ClickException."""
+        with mock.patch.object(essh, "shutil") as mock_shutil:
+            mock_shutil.which.return_value = None
+            with pytest.raises(click.ClickException, match="rsync not found"):
+                essh._run_rsync(["a", "b"], {}, is_tty=False)
+
+
+class TestCliScp:
+    """essh scp -- CLI integration tests."""
+
+    def test_scp_single_host(self, sample_profiles: list[dict], runner: click.testing.CliRunner) -> None:
+        """scp with one profile resolves NAME:path and calls _run_scp."""
+        with (
+            mock.patch.object(essh, "_run_scp", return_value=0) as mock_run,
+            mock.patch.object(essh, "_authorize_transfer_profiles"),
+        ):
+            result = runner.invoke(essh.main, ["scp", "prod-web:/remote", "./local/"])
+        assert result.exit_code == 0, result.output
+        args, _ = mock_run.call_args
+        resolved_args, profiles, is_tty = args
+        assert "deploy@web.example.com:/remote" in resolved_args
+        assert "./local/" in resolved_args
+        assert "prod-web" in profiles
+        assert is_tty is False
+
+    def test_scp_profile_not_found(self, sample_profiles: list[dict], runner: click.testing.CliRunner) -> None:
+        """Unknown profile name raises error with hint."""
+        result = runner.invoke(essh.main, ["scp", "nonexistent:/path", "./local/"])
+        assert result.exit_code != 0
+        assert "not found" in result.output
+
+    def test_scp_no_args(self, runner: click.testing.CliRunner) -> None:
+        """No arguments for scp shows usage error."""
+        result = runner.invoke(essh.main, ["scp"])
+        assert result.exit_code != 0
+        assert "Usage" in result.output
+
+    def test_scp_agent_mode_authorization(self, sample_profiles: list[dict], runner: click.testing.CliRunner) -> None:
+        """Non-TTY mode calls _authorize_transfer_profiles."""
+        with (
+            mock.patch.object(essh, "_run_scp", return_value=0),
+            mock.patch.object(essh, "_authorize_transfer_profiles") as mock_auth,
+        ):
+            result = runner.invoke(essh.main, ["scp", "prod-web:/remote", "./local/"])
+        assert result.exit_code == 0, result.output
+        mock_auth.assert_called_once()
+        auth_args, _ = mock_auth.call_args
+        profiles, is_tty = auth_args
+        assert "prod-web" in profiles
+        assert is_tty is False
+
+
+class TestCliRsync:
+    """essh rsync -- CLI integration tests."""
+
+    def test_rsync_single_host(self, sample_profiles: list[dict], runner: click.testing.CliRunner) -> None:
+        """rsync with one profile resolves NAME:path and calls _run_rsync."""
+        with (
+            mock.patch.object(essh, "_run_rsync", return_value=0) as mock_run,
+            mock.patch.object(essh, "_authorize_transfer_profiles"),
+        ):
+            result = runner.invoke(essh.main, ["rsync", "-avz", "prod-web:/remote", "./local/"])
+        assert result.exit_code == 0, result.output
+        args, _ = mock_run.call_args
+        resolved_args, profiles, is_tty = args
+        assert "deploy@web.example.com:/remote" in resolved_args
+        assert "-avz" in resolved_args
+        assert "./local/" in resolved_args
+        assert "prod-web" in profiles
+        assert is_tty is False
+
+    def test_rsync_profile_not_found(self, sample_profiles: list[dict], runner: click.testing.CliRunner) -> None:
+        """Unknown profile name raises error with hint."""
+        result = runner.invoke(essh.main, ["rsync", "nonexistent:/path", "./local/"])
+        assert result.exit_code != 0
+        assert "not found" in result.output
+
+    def test_rsync_no_args(self, runner: click.testing.CliRunner) -> None:
+        """No arguments for rsync shows usage error."""
+        result = runner.invoke(essh.main, ["rsync"])
+        assert result.exit_code != 0
+        assert "Usage" in result.output
+
+    def test_rsync_agent_mode_authorization(self, sample_profiles: list[dict], runner: click.testing.CliRunner) -> None:
+        """Non-TTY mode calls _authorize_transfer_profiles."""
+        with (
+            mock.patch.object(essh, "_run_rsync", return_value=0),
+            mock.patch.object(essh, "_authorize_transfer_profiles") as mock_auth,
+        ):
+            result = runner.invoke(essh.main, ["rsync", "prod-web:/remote", "./local/"])
+        assert result.exit_code == 0, result.output
+        mock_auth.assert_called_once()
+        auth_args, _ = mock_auth.call_args
+        profiles, is_tty = auth_args
+        assert "prod-web" in profiles
+        assert is_tty is False
+
+
+class TestAuthorizeTransferProfiles:
+    """_authorize_transfer_profiles() -- agent-mode authorization for transfers."""
+
+    def test_tty_mode_skips_auth(self, sample_profiles: list[dict]) -> None:
+        """When is_tty=True, no pending requests are created."""
+        profiles_dict = {"prod-web": sample_profiles[0]}
+        with (
+            mock.patch("agent_sommelier.essh.create_pending_request") as mock_create,
+            mock.patch("agent_sommelier.essh.wait_for_authorization") as mock_wait,
+        ):
+            essh._authorize_transfer_profiles(profiles_dict, is_tty=True)
+        mock_create.assert_not_called()
+        mock_wait.assert_not_called()
+
+    def test_non_tty_creates_pending(self, sample_profiles: list[dict]) -> None:
+        """When is_tty=False, creates pending request and waits for each profile."""
+        profiles_dict = {
+            "prod-web": sample_profiles[0],
+            "dev-db": sample_profiles[1],
+        }
+        with (
+            mock.patch("agent_sommelier.essh.create_pending_request") as mock_create,
+            mock.patch("agent_sommelier.essh.wait_for_authorization") as mock_wait,
+        ):
+            essh._authorize_transfer_profiles(profiles_dict, is_tty=False)
+        assert mock_create.call_count == 2
+        assert mock_wait.call_count == 2
+        mock_create.assert_any_call("prod-web")
+        mock_create.assert_any_call("dev-db")
+
+    def test_non_tty_timeout_raises(self, sample_profiles: list[dict]) -> None:
+        """When wait_for_authorization raises, the exception propagates."""
+        profiles_dict = {"prod-web": sample_profiles[0]}
+        with (
+            mock.patch("agent_sommelier.essh.create_pending_request"),
+            mock.patch(
+                "agent_sommelier.essh.wait_for_authorization",
+                side_effect=click.ClickException("Authorization timeout"),
+            ),
+        ):
+            with pytest.raises(click.ClickException, match="Authorization timeout"):
+                essh._authorize_transfer_profiles(profiles_dict, is_tty=False)

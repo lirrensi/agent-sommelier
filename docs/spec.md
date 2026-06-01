@@ -521,3 +521,53 @@ Agent process                    User process
 - If an attacker has user-level privileges on your machine, `essh` provides no meaningful defense.
 
 The authorization gate exists solely to prevent accidental agent foot-guns — not to defend against adversaries.
+
+### 8. `essh scp [SCP_OPTIONS...] SOURCE DEST`
+
+MUST:
+
+1. Accept any standard scp flags (e.g. `-r`, `-P`, `-C`, `-3`, `-q`) passed through transparently.
+2. Scan all positional arguments for `NAME:path` patterns using the regex `^[a-z0-9_-]+:`.
+3. For each matched `NAME:path`:
+   a. Look up NAME in `profiles.json`. If not found, list known names and exit 1.
+   b. Replace `NAME:path` with `user@host:path` from the resolved profile.
+4. Pass non-matching arguments (plain paths, scp flags) through unchanged.
+5. Collect unique identity keys and ports from resolved profiles.
+6. If multiple profiles have different keys, print a warning: scp's `-i` applies globally.
+7. Build the scp command: `scp [-i KEY ...] [-P PORT ...] [resolved_args...]`
+8. Execute scp:
+   a. In TTY mode: inherit all stdio streams, forward the exit code.
+   b. In non-TTY mode: capture stdout/stderr, echo stdout to stdout, print stderr with dim styling, forward the exit code.
+9. Respect the authorization gate identically to `essh connect`: non-TTY invocations MUST create pending requests and wait for authorization for each unique host involved.
+
+### 9. `essh rsync [RSYNC_OPTIONS...] SOURCE DEST`
+
+MUST:
+
+1. Accept any standard rsync flags (e.g. `-avz`, `--progress`, `--delete`, `--exclude`) passed through transparently.
+2. Scan all positional arguments for `NAME:path` patterns identically to `essh scp`.
+3. For each matched `NAME:path`:
+   a. Look up NAME in `profiles.json`. If not found, list known names and exit 1.
+   b. Replace `NAME:path` with `user@host:path` from the resolved profile.
+4. Pass non-matching arguments through unchanged.
+5. Build the SSH transport shell command (`-e`) from the first resolved profile:
+   a. `ssh [-i KEY_PATH] [-p PORT]`
+   b. If the profile has empty `key_path` (default keys mode), omit `-i`.
+   c. If the profile uses the default port (22), omit `-p`.
+6. If multiple profiles have different keys, print a warning: only the first profile's key is used for the SSH transport.
+7. Build the rsync command: `rsync -e "ssh [-i KEY] [-p PORT]" [resolved_args...]`
+8. Execute rsync:
+   a. In TTY mode: inherit all stdio streams, forward the exit code.
+   b. In non-TTY mode: capture stdout/stderr, echo stdout to stdout, print stderr with dim styling, forward the exit code.
+9. Respect the authorization gate identically to `essh connect`: non-TTY invocations MUST create pending requests and wait for authorization for each unique host involved.
+
+### Error Handling for Transfer Commands
+
+| Scenario | Behavior |
+|---|---|
+| No arguments provided | Error with usage hint, exit 1 |
+| Profile not found in `NAME:path` | Error with known names list, exit 1 |
+| `scp` binary not found on PATH | Platform-specific install hint, exit 1 |
+| `rsync` binary not found on PATH | Platform-specific install hint, exit 1 |
+| Multiple profiles with different keys (scp) | Warning, uses all `-i` flags (scp applies last wins) |
+| Multiple profiles with different keys (rsync) | Warning, uses first profile's key for `-e` transport |

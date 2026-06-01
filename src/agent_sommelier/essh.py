@@ -9,9 +9,12 @@
 Usage:
     essh add NAME USER@HOST[:PORT] [-i IDENTITY]
     essh NAME [COMMAND]                    # connect to saved host
+    essh scp [SCP_OPTIONS...] SOURCE DEST  # copy files with scp
+    essh rsync [RSYNC_OPTIONS...] SOURCE DEST  # sync files with rsync
     essh authorize NAME
     essh list [--json]
     essh rm NAME
+    essh edit NAME [--host|--port|--user|--identity|--new-name]
     essh export [OUTPUT]
     essh import ARCHIVE [--force]
 """
@@ -419,8 +422,11 @@ def main(ctx: click.Context) -> None:
     \b
     Commands:
       add       Save a new SSH host profile.
+      scp       Copy files with scp using saved profile names.
+      rsync     Sync files with rsync using saved profile names.
       list      List saved profiles.
       rm        Remove a profile.
+      edit      Modify an existing profile.
       export    Export profiles and keys to a tar.gz archive.
       import    Import profiles from a tar.gz archive.
       authorize Authorize a pending connection request.
@@ -628,6 +634,166 @@ def add(first: str, second: str | None, name: str | None, identity: Path | None,
     profiles.append(profile)
     save_profiles(profiles)
     console.print(f"[green]Profile '{name}' saved.[/green]")
+
+
+# ---------------------------------------------------------------------------
+# Transfer helpers (scp / rsync)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_transfer_args(args: list[str]) -> tuple[list[str], dict[str, dict]]:
+    """Resolve NAME:path patterns in scp/rsync arguments.
+
+    Returns (resolved_args, profiles) where profiles maps name -> profile dict.
+    The resolved args replace NAME:path with user@host:path.
+    """
+    resolved: list[str] = []
+    profiles: dict[str, dict] = {}
+
+    for arg in args:
+        m = re.match(r'^([a-z0-9_-]+):(.*)$', arg)
+        if m:
+            name = m.group(1)
+            path = m.group(2)
+            profile = find_profile(name)
+            if profile is None:
+                known = list_profile_names()
+                hint = f" Known profiles: {', '.join(known)}" if known else ""
+                raise click.ClickException(
+                    f"Profile '{name}' not found.{hint}"
+                )
+            profiles[name] = profile
+            resolved.append(f"{profile['user']}@{profile['host']}:{path}")
+        else:
+            resolved.append(arg)
+
+    return resolved, profiles
+
+
+def _authorize_transfer_profiles(
+    profiles: dict[str, dict],
+    is_tty: bool,
+) -> None:
+    """Authorize all profiles for agent-mode transfers."""
+    if is_tty:
+        return
+    for name in profiles:
+        console.print(
+            f"[yellow]Agent mode: requesting authorization for '{name}'...[/yellow]"
+        )
+        create_pending_request(name)
+        try:
+            wait_for_authorization(name)
+            console.print(f"[green]Authorization granted for '{name}'.[/green]")
+        except click.ClickException:
+            console.print(
+                f"[red]Authorization denied or timed out for '{name}'.[/red]"
+            )
+            raise
+
+
+def _run_scp(
+    resolved_args: list[str],
+    profiles: dict[str, dict],
+    is_tty: bool,
+) -> int:
+    """Build and run scp with resolved args and profile identities."""
+    scp_bin = shutil.which("scp") or shutil.which("scp.exe")
+    if not scp_bin:
+        raise click.ClickException(
+            "scp not found on PATH. Install OpenSSH client:\n"
+            "  winget install Microsoft.OpenSSH.Beta    (Windows)\n"
+            "  apt install openssh-client               (Debian/Ubuntu)\n"
+            "  brew install openssh                     (macOS)"
+        )
+
+    # Collect identity/port args from profiles
+    identity_args: list[str] = []
+    seen_keys: set[str] = set()
+    for profile in profiles.values():
+        key_path_raw = profile.get("key_path") or ""
+        if key_path_raw and key_path_raw not in seen_keys:
+            identity_args.extend(["-i", key_path_raw])
+            seen_keys.add(key_path_raw)
+        port = profile.get("port", DEFAULT_PORT)
+        if port != DEFAULT_PORT:
+            identity_args.extend(["-P", str(port)])
+
+    # Warn if multiple profiles have different keys (scp limitation)
+    if len(seen_keys) > 1:
+        console.print(
+            "[yellow]Warning: multiple profiles with different keys. "
+            "scp -i applies globally; consider using -3 (copy via localhost).[/yellow]"
+        )
+
+    cmd = [scp_bin] + identity_args + resolved_args
+
+    if is_tty:
+        result = subprocess.run(
+            cmd, stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr
+        )
+    else:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.stdout:
+            click.echo(result.stdout, nl=False)
+        if result.stderr:
+            console.print(f"[dim]{result.stderr}[/dim]", end="")
+
+    return result.returncode
+
+
+def _run_rsync(
+    resolved_args: list[str],
+    profiles: dict[str, dict],
+    is_tty: bool,
+) -> int:
+    """Build and run rsync with resolved args and profile identities."""
+    rsync_bin = shutil.which("rsync") or shutil.which("rsync.exe")
+    if not rsync_bin:
+        raise click.ClickException(
+            "rsync not found on PATH. Install rsync:\n"
+            "  apt install rsync               (Debian/Ubuntu)\n"
+            "  brew install rsync              (macOS)\n"
+            "  winget install rsync            (Windows via winget/scoop/choco)"
+        )
+
+    # Build the SSH transport command for -e
+    # Use the first profile's key/port settings
+    first = next(iter(profiles.values()))
+    ssh_parts = ["ssh"]
+    key_path_raw = first.get("key_path") or ""
+    if key_path_raw:
+        ssh_parts.extend(["-i", key_path_raw])
+    port = first.get("port", DEFAULT_PORT)
+    if port != DEFAULT_PORT:
+        ssh_parts.extend(["-p", str(port)])
+
+    # Warn if multiple profiles with different keys
+    seen_keys: set[str] = set()
+    for p in profiles.values():
+        k = p.get("key_path") or ""
+        if k:
+            seen_keys.add(k)
+    if len(seen_keys) > 1:
+        console.print(
+            "[yellow]Warning: multiple profiles with different keys. "
+            "Only the first profile's key is used for the SSH transport.[/yellow]"
+        )
+
+    cmd = [rsync_bin, "-e", " ".join(ssh_parts)] + resolved_args
+
+    if is_tty:
+        result = subprocess.run(
+            cmd, stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr
+        )
+    else:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.stdout:
+            click.echo(result.stdout, nl=False)
+        if result.stderr:
+            console.print(f"[dim]{result.stderr}[/dim]", end="")
+
+    return result.returncode
 
 
 # ---------------------------------------------------------------------------
@@ -869,6 +1035,77 @@ def edit_profile(name: str, host: str | None, port: int | None, user: str | None
 
     display_name = new_name or name
     console.print(f"[green]Profile '{display_name}' updated.[/green]")
+
+
+# ---------------------------------------------------------------------------
+# scp
+# ---------------------------------------------------------------------------
+
+@main.command(
+    name="scp",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+)
+@click.pass_context
+def scp_cmd(ctx: click.Context) -> None:
+    """Copy files with scp using saved profile names.
+
+    \b
+    Usage:  essh scp [SCP_OPTIONS...] SOURCE DEST
+
+    Use NAME:path instead of user@host:path for saved profiles.
+
+    \b
+    Examples:
+      essh scp my-server:/remote/file.txt ./local/
+      essh scp -r ./local/dir/ my-server:/remote/dir/
+      essh scp my-server:/remote/log ./
+    """
+    raw_args = list(ctx.args)
+    if not raw_args:
+        raise click.ClickException("Usage: essh scp [OPTIONS...] SOURCE DEST")
+
+    resolved_args, profiles = _resolve_transfer_args(raw_args)
+
+    is_tty = sys.stdin.isatty()
+    _authorize_transfer_profiles(profiles, is_tty)
+
+    exit_code = _run_scp(resolved_args, profiles, is_tty)
+    sys.exit(exit_code)
+
+
+# ---------------------------------------------------------------------------
+# rsync
+# ---------------------------------------------------------------------------
+
+@main.command(
+    name="rsync",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+)
+@click.pass_context
+def rsync_cmd(ctx: click.Context) -> None:
+    """Sync files with rsync using saved profile names.
+
+    \b
+    Usage:  essh rsync [RSYNC_OPTIONS...] SOURCE DEST
+
+    Use NAME:path instead of user@host:path for saved profiles.
+
+    \b
+    Examples:
+      essh rsync -avz my-server:/var/www/ ./www-backup/
+      essh rsync --progress ./build/ my-server:/srv/app/
+    """
+    raw_args = list(ctx.args)
+    if not raw_args:
+        raise click.ClickException("Usage: essh rsync [OPTIONS...] SOURCE DEST")
+
+    resolved_args, profiles = _resolve_transfer_args(raw_args)
+
+    is_tty = sys.stdin.isatty()
+    _authorize_transfer_profiles(profiles, is_tty)
+
+    exit_code = _run_rsync(resolved_args, profiles, is_tty)
+    sys.exit(exit_code)
 
 
 # ---------------------------------------------------------------------------

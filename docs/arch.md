@@ -1081,6 +1081,70 @@ Agent (no TTY)                    User (interactive)
   | ssh -i ... root@host deploy.sh   |
 ```
 
+### Transfer Commands: `essh scp` / `essh rsync`
+
+Both commands share the same argument resolution pattern and authorization flow:
+
+```
+scp/rsync command (ctx.args)
+    |
+    +-- _resolve_transfer_args(raw_args)
+    |       |
+    |       +-- for each arg:
+    |               |
+    |               +-- matches ^([a-z0-9_-]+):(.*)$ ?
+    |               |       |
+    |               |       +-- YES: find_profile(name) → resolve to user@host:path
+    |               |       |       |
+    |               |       |       +-- not found? → error with known names list
+    |               |       |       +-- found? → replace NAME:path with user@host:path
+    |               |
+    |               +-- NO: pass arg through unchanged
+    |
+    +-- returns (resolved_args, profiles_dict)
+    |
+    +-- _authorize_transfer_profiles(profiles, is_tty)
+    |       |
+    |       +-- if is_tty: return (no gate)
+    |       +-- for each profile: create_pending_request() + wait_for_authorization()
+    |
+    +-- _run_scp(resolved_args, profiles, is_tty)
+    |       |
+    |       +-- find scp binary (shutil.which)
+    |       +-- collect unique -i/-P args from profiles
+    |       +-- warn on multiple different keys
+    |       +-- cmd = [scp, -i KEY... -P PORT...] + resolved_args
+    |       +-- execute (TTY: inherit streams / non-TTY: capture)
+    |       +-- return exit code
+    |
+    +-- _run_rsync(resolved_args, profiles, is_tty)
+            |
+            +-- find rsync binary (shutil.which)
+            +-- build -e "ssh [-i KEY] [-p PORT]" from first profile
+            +-- warn on multiple different keys
+            +-- cmd = [rsync, -e, "ssh ..."] + resolved_args
+            +-- execute (TTY: inherit streams / non-TTY: capture)
+            +-- return exit code
+```
+
+**Implementation files:** `src/agent_sommelier/essh.py` (added to the existing module — no new files)
+
+**New functions:**
+| Function | Purpose |
+|---|---|
+| `_resolve_transfer_args(args)` | Scans arg list, resolves `NAME:path` → `user@host:path` |
+| `_authorize_transfer_profiles(profiles, is_tty)` | Authorizes all involved hosts in agent mode |
+| `_run_scp(resolved_args, profiles, is_tty)` | Builds and executes the scp subprocess |
+| `_run_rsync(resolved_args, profiles, is_tty)` | Builds and executes the rsync subprocess |
+
+**New Click commands:**
+| Command | Purpose |
+|---|---|
+| `scp` | `essh scp [SCP_OPTIONS...] SOURCE DEST` — uses `context_settings={"ignore_unknown_options": True, "allow_extra_args": True}` |
+| `rsync` | `essh rsync [RSYNC_OPTIONS...] SOURCE DEST` — uses `context_settings={"ignore_unknown_options": True, "allow_extra_args": True}` |
+
+Both commands use `@click.pass_context` and read raw args from `ctx.args`, bypassing Click's option parsing so that all scp/rsync flags pass through transparently.
+
 ---
 
 ## Dependencies Graph
