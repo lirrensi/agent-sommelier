@@ -403,22 +403,158 @@ def _try_ssh_default_keys(user: str, host: str, port: int) -> bool:
 # ssh-copy-id
 # ---------------------------------------------------------------------------
 
+def _verify_key_works(user: str, host: str, port: int, key_path: Path) -> bool:
+    """Verify that SSH connects using *key_path* (no password fallback)."""
+    try:
+        result = subprocess.run(
+            [
+                *ssh_cmd(),
+                "-i", str(key_path),
+                "-o", "PasswordAuthentication=no",
+                "-o", "BatchMode=yes",
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-o", "ConnectTimeout=10",
+                "-p", str(port),
+                f"{user}@{host}",
+                "echo essh_ok",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
+
+
+def _write_ssh_config(host: str, key_path: Path, user: str | None = None,
+                     port: int = DEFAULT_PORT) -> None:
+    """Add or update a Host entry in ~/.ssh/config so plain ``ssh`` works.
+
+    Managed entries are marked with ``# essh:managed`` — they survive
+    ``uv tool uninstall`` and keep working with plain OpenSSH.
+    """
+    config_path = Path.home() / ".ssh" / "config"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Build the Host block
+    lines = [
+        f"Host {host}",
+        f"    HostName {host}",
+    ]
+    if user:
+        lines.append(f"    User {user}")
+    if port != DEFAULT_PORT:
+        lines.append(f"    Port {port}")
+    lines.append(f"    IdentityFile {key_path}")
+    lines.append("    # essh:managed")
+
+    # Read existing config
+    if config_path.exists():
+        content = config_path.read_text(encoding="utf-8")
+    else:
+        content = ""
+
+    # Remove any previous essh:managed block for this host
+    marker = "# essh:managed"
+    if marker in content:
+        # Split into blocks, remove ones ending with our marker for this host
+        blocks = content.split("\n\n")
+        kept = []
+        for block in blocks:
+            if marker in block and f"Host {host}" in block:
+                continue  # remove old entry for this host
+            kept.append(block)
+        content = "\n\n".join(kept)
+
+    # Append new entry
+    if content and not content.endswith("\n"):
+        content += "\n"
+    if content and not content.endswith("\n\n"):
+        content += "\n"
+    content += "\n".join(lines) + "\n"
+
+    config_path.write_text(content, encoding="utf-8")
+
+
 def ssh_copy_id(user: str, host: str, port: int, pubkey_path: Path) -> None:
-    """Pipe the public key into the remote authorized_keys file."""
+    """Pipe the public key into the remote authorized_keys file.
+
+    The key is embedded directly in the remote command (not piped via stdin)
+    because stdin-pipe timing breaks on password auth: Python closes the pipe
+    before SSH finishes authenticating, so the remote ``cat`` gets EOF.
+    """
     key = pubkey_path.read_text(encoding="utf-8").strip()
-    remote_cmd = "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
+    # Escape single quotes so the key survives shell quoting
+    key_escaped = key.replace("'", "'\\''")
+    remote_cmd = (
+        "mkdir -p ~/.ssh && "
+        f"echo '{key_escaped}' >> ~/.ssh/authorized_keys && "
+        "chmod 600 ~/.ssh/authorized_keys"
+    )
 
     result = subprocess.run(
         [*ssh_cmd(), "-p", str(port), f"{user}@{host}", remote_cmd],
-        input=key,
-        text=True,
         stdout=sys.stdout,
         stderr=sys.stderr,
     )
     if result.returncode != 0:
         raise click.ClickException(
-            f"ssh-copy-id failed (exit {result.returncode})"
+            f"ssh-copy-id FAILED (exit {result.returncode}).\n"
+            f"The public key was NOT installed on {host}.\n"
+            f"Possible causes:\n"
+            f"  1. Wrong password — the key was generated but never copied.\n"
+            f"  2. Remote server rejected the connection.\n"
+            f"Fix: run 'essh add' again with the correct password, or manually:\n"
+            f"  type {pubkey_path} | ssh -p {port} {user}@{host} "
+            f"\"cat >> ~/.ssh/authorized_keys\""
         )
+
+
+def _install_and_verify(user: str, host: str, port: int,
+                       private_key: Path, pubkey: Path) -> None:
+    """Install *pubkey* on remote and verify *private_key* works.
+
+    Prints clear step-by-step output.  Raises ClickException on failure
+    with an actionable fix command — never leaves the user guessing.
+    """
+    console.print(
+        f"[bold]▶ Step 2/3: Installing key on {user}@{host}:{port}...[/bold]"
+    )
+    console.print("[dim]   You may be prompted for the remote password.[/dim]")
+    ssh_copy_id(user, host, port, pubkey)
+
+    # Try ssh-agent so passphrase-protected keys still verify
+    ensure_ssh_agent(private_key)
+
+    console.print("[bold]▶ Step 3/3: Verifying key...[/bold]")
+    if not _verify_key_works(user, host, port, private_key):
+        # Build OS-appropriate fix command
+        if sys.platform == "win32":
+            fix_cmd = (
+                f'Get-Content "{pubkey}" | ssh -p {port} {user}@{host} '
+                f'"cat >> ~/.ssh/authorized_keys"'
+            )
+        else:
+            fix_cmd = (
+                f"cat {pubkey} | ssh -p {port} {user}@{host} "
+                f'"cat >> ~/.ssh/authorized_keys"'
+            )
+        raise click.ClickException(
+            f"✗ VERIFICATION FAILED — key is NOT authorized on {host}.\n"
+            f"   Possible causes:\n"
+            f"     1. Remote server did not save the key.\n"
+            f"     2. Key has a passphrase and ssh-agent is not running.\n"
+            f"        Start agent:  ssh-agent  then  ssh-add {private_key}\n"
+            f"     3. Remote sshd config rejects key-based auth.\n"
+            f"   Fix — run this manually:\n"
+            f"     {fix_cmd}\n"
+            f"   Then test with:\n"
+            f"     ssh -i {private_key} -p {port} {user}@{host} echo ok"
+        )
+    console.print(
+        f"[green]   ✓ Key verified — password-less SSH to {host} works.[/green]"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -667,57 +803,77 @@ def add(first: str, second: str | None, name: str | None, identity: Path | None,
 
     # Validate the resolved name
     validate_name(name)
-
-    if find_profile(name):
-        raise click.ClickException(
-            f"Profile '{name}' already exists. Use 'essh rm {name}' first."
-        )
-
     user, host, port = parse_host_string(target)
 
+    # ── Self-repair: existing profile ──────────────────────────────────
+    existing = find_profile(name)
+    if existing:
+        console.print(f"[dim]Profile '{name}' already exists.[/dim]")
+        existing_key = existing.get("key_path")
+
+        if existing_key:
+            # Old-style named key (e.g. id_ed25519_k-int-cron).
+            # Don't migrate keys — just write SSH config so plain `ssh` works.
+            existing_key_path = Path(existing_key)
+            console.print("[dim]Old-style named key — adding SSH config entry...[/dim]")
+            if existing_key_path.is_file():
+                _write_ssh_config(host, existing_key_path, user, port)
+                console.print(
+                    f"[green]✓ SSH config updated — plain `ssh {user}@{host}` now works.[/green]"
+                )
+                return
+            # Key file missing — fall through to regenerate
+            console.print("[yellow]⚠ Key file missing. Regenerating...[/yellow]")
+        else:
+            # Uses default keys — check if they still work
+            console.print("[dim]Profile uses default SSH keys. Checking...[/dim]")
+            if _try_ssh_default_keys(user, host, port):
+                console.print("[green]✓ Default keys still work — no changes needed.[/green]")
+                return
+            console.print(
+                "[yellow]⚠ Default keys no longer work. Generating a dedicated key...[/yellow]"
+            )
+
+    # ── New profile (or rebuild) ───────────────────────────────────────
     if identity:
-        # -- identity provided: reference it in-place, push the pubkey -------
+        # Explicit identity provided
         private_key = identity.expanduser().resolve()
         if not private_key.is_file():
             raise click.ClickException(f"Key not found: {private_key}")
+
+        console.print(
+            f"[bold]▶ Step 1/3: Using existing key {private_key}[/bold]"
+        )
 
         pub_source = Path(str(private_key) + ".pub")
         if not pub_source.is_file():
             pub_source = private_key.with_suffix(private_key.suffix + ".pub")
         if pub_source.is_file():
+            _install_and_verify(user, host, port, private_key, pub_source)
+        else:
             console.print(
-                f"[bold]Copying public key to {user}@{host}:{port}...[/bold]"
+                "[yellow]⚠ No public key found for this identity — skipping install.[/yellow]"
             )
             console.print(
-                "[dim]You may be prompted for the remote password.[/dim]"
+                "[dim]   The key will be used for connections but was not pushed to the remote.[/dim]"
             )
-            ssh_copy_id(user, host, port, pub_source)
 
-        profile: dict = {
-            "name": name,
-            "user": user,
-            "host": host,
-            "port": port,
-            "key_path": str(private_key),
-        }
+        final_key_path = str(private_key)
 
     else:
-        # -- no identity flag: try existing keys first -----------------------
+        # No identity flag: try default keys or generate
         console.print(
-            f"[dim]Checking existing SSH keys for {user}@{host}:{port}...[/dim]"
+            f"[bold]▶ Step 1/3: Checking SSH access to {user}@{host}:{port}...[/bold]"
         )
 
         if _try_ssh_default_keys(user, host, port):
-            # Already have access — save profile with empty key_path
-            profile = {
-                "name": name,
-                "user": user,
-                "host": host,
-                "port": port,
-                "key_path": "",  # means "use default SSH keys"
-            }
+            console.print(
+                "[green]   ✓ Already have access via default SSH keys.[/green]"
+            )
+            final_key_path = ""
         else:
-            # No working key — handle prompting
+            console.print("[dim]   No existing key works.[/dim]")
+
             if non_interactive:
                 raise click.ClickException(
                     "No working SSH key found. Use -i/--identity to provide one, "
@@ -740,39 +896,51 @@ def add(first: str, second: str | None, name: str | None, identity: Path | None,
             ssh_dir = Path.home() / ".ssh"
             ssh_dir.mkdir(parents=True, exist_ok=True)
 
-            default_key = ssh_dir / "id_ed25519"
-            if default_key.is_file():
-                key_path = ssh_dir / f"id_ed25519_{name}"
-            else:
-                key_path = default_key
+            # Always use the SSH default key name so plain `ssh user@host`
+            # works without any config — exactly like manual ssh-copy-id.
+            key_path = ssh_dir / "id_ed25519"
 
             console.print(
-                f"[dim]Generating ed25519 keypair: {key_path}[/dim]"
+                f"[dim]   Generating ed25519 key: {key_path}[/dim]"
             )
-            generate_keypair(name, key_path)
+            if key_path.is_file():
+                console.print(
+                    "[dim]   Key already exists — reusing.[/dim]"
+                )
+            else:
+                generate_keypair(name, key_path)
 
             pub_path = key_path.with_suffix(".pub")
-            console.print(
-                f"[bold]Copying public key to {user}@{host}:{port}...[/bold]"
-            )
-            console.print(
-                "[dim]You may be prompted for the remote password.[/dim]"
-            )
-            ssh_copy_id(user, host, port, pub_path)
+            _install_and_verify(user, host, port, key_path, pub_path)
 
-            profile = {
-                "name": name,
-                "user": user,
-                "host": host,
-                "port": port,
-                "key_path": str(key_path),
-            }
+            # Store empty key_path — essh will use SSH defaults,
+            # which auto-tries id_ed25519.  Same as plain `ssh`.
+            final_key_path = ""
 
-    # Persist profile
+    # ── Save profile ───────────────────────────────────────────────────
+    profile: dict = {
+        "name": name,
+        "user": user,
+        "host": host,
+        "port": port,
+        "key_path": final_key_path,
+    }
+
     profiles = load_profiles()
+    # Remove old entry if self-repairing
+    profiles = [p for p in profiles if p.get("name") != name]
     profiles.append(profile)
     save_profiles(profiles)
-    console.print(f"[green]Profile '{name}' saved.[/green]")
+
+    console.print(
+        f"[green]✓ DONE — Profile '{name}' saved.[/green]"
+    )
+    console.print(
+        f"[dim]   Plain SSH works: ssh {user}@{host}[/dim]"
+    )
+    console.print(
+        f"[dim]   Or via essh:   essh {name} echo ok[/dim]"
+    )
 
 
 # ---------------------------------------------------------------------------

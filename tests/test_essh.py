@@ -339,7 +339,7 @@ class TestGenerateKeypair:
 
 
 class TestSshCopyId:
-    """ssh_copy_id() — pipes public key via SSH."""
+    """ssh_copy_id() — installs public key inline in remote command."""
 
     def test_subprocess_call(self, tmp_home: Path, mock_subprocess_run: mock.MagicMock) -> None:
         pubkey_path = tmp_home / ".ssh" / "id_ed25519.pub"
@@ -350,34 +350,35 @@ class TestSshCopyId:
 
         essh.ssh_copy_id("deploy", "server.com", 2222, pubkey_path)
 
-        # Verify stdin=key was passed (the fix — no stdin=sys.stdin conflict)
-        call_kwargs = mock_subprocess_run.call_args[1]
-        assert "input" in call_kwargs
-        assert call_kwargs["input"] == "ssh-ed25519 AAAA... test-key"
-        assert call_kwargs["text"] is True
-        # Verify the remote command
+        # Verify key is embedded in the remote command (no stdin pipe)
         call_args = mock_subprocess_run.call_args[0][0]
-        assert "cat >> ~/.ssh/authorized_keys" in call_args[-1]
+        remote_cmd = call_args[-1]
+        assert "mkdir -p ~/.ssh" in remote_cmd
+        assert "echo '" in remote_cmd
+        assert "ssh-ed25519 AAAA... test-key" in remote_cmd
+        assert ">> ~/.ssh/authorized_keys" in remote_cmd
+        assert "chmod 600" in remote_cmd
+        # Verify no input= (key is in command, not piped)
+        call_kwargs = mock_subprocess_run.call_args[1]
+        assert "input" not in call_kwargs
 
     def test_raises_on_failure(self, tmp_home: Path, mock_subprocess_run: mock.MagicMock) -> None:
         pubkey_path = tmp_home / "test.pub"
         pubkey_path.write_text("ssh-ed25519 KEY\n", encoding="utf-8")
         mock_subprocess_run.return_value.returncode = 1
-        with pytest.raises(click.ClickException, match="ssh-copy-id failed"):
+        with pytest.raises(click.ClickException, match="FAILED"):
             essh.ssh_copy_id("user", "host", 22, pubkey_path)
 
-    def test_pipes_key_only_stdin(self, tmp_home: Path, mock_subprocess_run: mock.MagicMock) -> None:
-        """Regression test: ensure no ValueError from conflicting stdin=input."""
+    def test_no_stdin_pipe_conflict(self, tmp_home: Path, mock_subprocess_run: mock.MagicMock) -> None:
+        """Regression: key inlined in command — no stdin=input, no conflict."""
         pubkey_path = tmp_home / "test.pub"
         pubkey_path.write_text("ssh-ed25519 KEY\n", encoding="utf-8")
         mock_subprocess_run.return_value.returncode = 0
         # This should not raise ValueError
         essh.ssh_copy_id("user", "host", 22, pubkey_path)
         call_kwargs = mock_subprocess_run.call_args[1]
-        # Verify stdin is NOT passed alongside input
-        assert "stdin" not in call_kwargs or call_kwargs.get("stdin") is not None
-        # But input is passed
-        assert call_kwargs.get("input") == "ssh-ed25519 KEY"
+        assert "input" not in call_kwargs
+        assert "stdin" not in call_kwargs
 
 
 class TestSshDefaultKeysProbe:
@@ -576,8 +577,9 @@ class TestCliAdd:
         # With default keys working, key_path should be empty
         assert p["key_path"] == ""
 
-    def test_add_without_identity_no_default_keys_generates(self, tmp_home: Path, runner: click.testing.CliRunner) -> None:
+    def test_add_without_identity_no_default_keys_generates(self, tmp_home: Path, runner: click.testing.CliRunner, mock_subprocess_run: mock.MagicMock) -> None:
         """No -i, no default keys → generates key in ~/.ssh/."""
+        mock_subprocess_run.return_value.returncode = 0
         with (
             mock.patch.object(essh, "_try_ssh_default_keys", return_value=False),
             mock.patch.object(essh, "generate_keypair", return_value=tmp_home / ".ssh" / "id_ed25519_test") as mock_gen,
@@ -589,11 +591,13 @@ class TestCliAdd:
         profiles = essh.load_profiles()
         assert len(profiles) == 1
         p = profiles[0]
-        # Key should be in ~/.ssh/
-        assert p["key_path"].startswith(str(tmp_home / ".ssh"))
+        # Key is ~/.ssh/id_ed25519 — profile stores empty key_path
+        # so essh uses SSH defaults, same as plain `ssh`.
+        assert p["key_path"] == ""
 
-    def test_add_non_interactive_generates_silently(self, tmp_home: Path, runner: click.testing.CliRunner) -> None:
+    def test_add_non_interactive_generates_silently(self, tmp_home: Path, runner: click.testing.CliRunner, mock_subprocess_run: mock.MagicMock) -> None:
         """Non-interactive mode (no TTY) should auto-generate name and key."""
+        mock_subprocess_run.return_value.returncode = 0
         with (
             mock.patch.object(essh, "_try_ssh_default_keys", return_value=False),
             mock.patch.object(essh, "generate_keypair", return_value=tmp_home / ".ssh" / "id_ed25519_test"),
@@ -610,15 +614,20 @@ class TestCliAdd:
         assert p["port"] == 22
 
     def test_add_duplicate_name_raises(self, tmp_home: Path, runner: click.testing.CliRunner, sample_profiles: list[dict], mock_subprocess_run: mock.MagicMock) -> None:
-        """Adding a profile with an existing name raises error."""
+        """Adding a profile with an existing name now triggers self-repair.
+        If the existing key works, it reports 'Already working'.
+        If it's broken, it attempts repair and reports the result.
+        """
         mock_subprocess_run.return_value.returncode = 0
-        # Create a real key file so Click validation passes
+        # Create real key files so Click validation passes
         real_key = tmp_home / "somekey"
         real_key.write_text("key content", encoding="utf-8")
         (tmp_home / "somekey.pub").write_text("ssh-ed25519 KEY\n", encoding="utf-8")
         result = runner.invoke(essh.main, ["add", "prod-web", "x@y.com", "-i", str(real_key)])
-        assert result.exit_code != 0
+        # Self-repair: existing profile detected, default keys still work (mock)
+        assert result.exit_code == 0, result.output
         assert "already exists" in result.output
+        assert "no changes needed" in result.output
 
     def test_add_invalid_name_raises(self, tmp_home: Path, runner: click.testing.CliRunner) -> None:
         result = runner.invoke(essh.main, ["add", "INVALID_NAME", "user@host.com"])
@@ -640,8 +649,9 @@ class TestCliAdd:
         """
         pytest.skip("User-decline path is interactive-only; unreachable via CliRunner")
 
-    def test_add_key_exists_in_ssh_dir(self, tmp_home: Path, runner: click.testing.CliRunner) -> None:
-        """When ~/.ssh/id_ed25519 already exists, generate a named variant."""
+    def test_add_key_exists_in_ssh_dir(self, tmp_home: Path, runner: click.testing.CliRunner, mock_subprocess_run: mock.MagicMock) -> None:
+        """Key always goes to ~/.ssh/id_ed25519 (SSH default). Reuses if exists."""
+        mock_subprocess_run.return_value.returncode = 0
         ssh_dir = tmp_home / ".ssh"
         ssh_dir.mkdir(parents=True, exist_ok=True)
         (ssh_dir / "id_ed25519").write_text("existing key", encoding="utf-8")
@@ -649,7 +659,6 @@ class TestCliAdd:
 
         with (
             mock.patch.object(essh, "_try_ssh_default_keys", return_value=False),
-            mock.patch.object(essh, "generate_keypair", return_value=ssh_dir / "id_ed25519_test"),
             mock.patch.object(essh, "ssh_copy_id"),
         ):
             result = runner.invoke(essh.main, ["add", "user@host.com"])
@@ -658,8 +667,8 @@ class TestCliAdd:
         profiles = essh.load_profiles()
         assert len(profiles) == 1
         p = profiles[0]
-        # Since id_ed25519 existed, should have created id_ed25519_<name>
-        assert "id_ed25519_" in p["key_path"]
+        # Profile uses default keys (empty key_path)—SSH auto-tries id_ed25519
+        assert p["key_path"] == ""
 
     def test_add_cannot_use_n_and_two_positional(self, tmp_home: Path, runner: click.testing.CliRunner) -> None:
         result = runner.invoke(essh.main, ["add", "-n", "myname", "arg1", "arg2"])
@@ -1024,15 +1033,16 @@ class TestEdgeCases:
     """Dark corners, regressions, and boundary conditions."""
 
     def test_ssh_copy_id_no_valueerror(self, tmp_home: Path, mock_subprocess_run: mock.MagicMock) -> None:
-        """Regression: ssh_copy_id must not raise ValueError from stdin+input conflict."""
+        """Regression: ssh_copy_id must not raise ValueError from stdin+input conflict.
+        After the fix, the key is embedded in the remote command — no stdin pipe needed."""
         pubkey_path = tmp_home / "key.pub"
         pubkey_path.write_text("ssh-ed25519 KEY\n", encoding="utf-8")
         mock_subprocess_run.return_value.returncode = 0
-        # This was the bug: passing both stdin=sys.stdin and input=key
-        # After fix, only input=key is used with stdout/stderr passed
         essh.ssh_copy_id("user", "host", 22, pubkey_path)
         call_kwargs = mock_subprocess_run.call_args[1]
-        assert call_kwargs.get("input") is not None
+        # Key is inlined in the remote command — no input=, no stdin=
+        assert "input" not in call_kwargs
+        assert "stdin" not in call_kwargs
         # stdout should be sys.stdout (for user to see password prompt)
         assert call_kwargs.get("stdout") == sys.stdout
 
