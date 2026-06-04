@@ -83,8 +83,7 @@ def migrate_to_perfile() -> dict[str, Any]:
     if "config" not in meta or not isinstance(meta.get("config"), dict):
         meta["config"] = dict(DEFAULT_TASK_CONFIG)
 
-    active_count = sum(1 for t in all_tasks if not t.get("closed", False))
-    closed_count = len(all_tasks) - active_count
+    total_count = len(all_tasks)
 
     # Create new backend
     new_storage = PerFileYamlStorage(tasks_dir)
@@ -101,9 +100,7 @@ def migrate_to_perfile() -> dict[str, Any]:
     set_storage(new_storage)
 
     return {
-        "migrated": len(all_tasks),
-        "active": active_count,
-        "closed": closed_count,
+        "migrated": total_count,
         "from": "monolithic",
         "to": "perfile",
     }
@@ -166,6 +163,8 @@ def _inbox_file() -> Path:
 
 
 def _migrate_task(task: dict[str, Any]) -> dict[str, Any]:
+    task.pop("closed", None)
+    task.pop("closed_at", None)
     return _ensure_deps_normalized(task)
 
 
@@ -186,10 +185,9 @@ def load_tasks_yaml() -> tuple[dict[str, Any], list[dict[str, Any]]]:
         meta["config"] = dict(DEFAULT_TASK_CONFIG)
     all_tasks = s.load_all_tasks()
     _migrate_tasks(all_tasks)
-    active = [t for t in all_tasks if not t.get("closed", False)]
-    # Preserve newest-first ordering for backward compat
-    active.sort(key=lambda t: t.get("id", ""), reverse=True)
-    return meta, active
+    # All tasks in one unified list — no closed filtering
+    all_tasks.sort(key=lambda t: t.get("id", ""), reverse=True)
+    return meta, all_tasks
 
 
 def save_tasks_yaml(meta: dict[str, Any], tasks: list[dict[str, Any]]) -> None:
@@ -200,19 +198,13 @@ def save_tasks_yaml(meta: dict[str, Any], tasks: list[dict[str, Any]]) -> None:
 
 
 def load_closed_yaml() -> list[dict[str, Any]]:
-    tasks_dir = _resolve_tasks_dir()
-    if not tasks_dir.exists():
-        return []
-    s = _ensure_storage()
-    all_tasks = s.load_all_tasks()
-    _migrate_tasks(all_tasks)
-    return [t for t in all_tasks if t.get("closed", False)]
+    """Deprecated. All tasks live in one unified list via load_tasks_yaml()."""
+    return []
 
 
 def save_closed_yaml(closed_list: list[dict[str, Any]]) -> None:
-    s = _ensure_storage()
-    for task in _strip_none_fields_from_list(closed_list):
-        s.save_task(task)
+    """Deprecated. No-op — all tasks save via save_tasks_yaml()."""
+    pass
 
 
 def load_inbox() -> str:
@@ -234,7 +226,7 @@ def _strip_none_fields(task: dict[str, Any]) -> dict[str, Any]:
             continue
         if isinstance(v, (list, dict)) and not v:
             continue
-        if k in ("related",):
+        if k in ("related", "closed", "closed_at"):
             continue
         result[k] = v
     return result
@@ -339,7 +331,7 @@ def _get_blockers(task: dict[str, Any], tasks_list: list[dict[str, Any]], closed
     blockers: list[dict[str, Any]] = []
     for bid in block_ids:
         target = _resolve_related(bid, tasks_list, closed_list)
-        if target is None or (target.get("status") != close_status and not target.get("closed", False)):
+        if target is None or target.get("status") != close_status:
             blockers.append({"id": bid, "task": target})
     return blockers
 
@@ -428,7 +420,7 @@ def _overview_task_hint(task: dict[str, Any], tasks_list: list[dict[str, Any]], 
 
 
 def build_overview_data(tasks: list[dict[str, Any]], closed_list: list[dict[str, Any]], ready_status: str = "todo", close_status: str = "done") -> dict[str, Any]:
-    active_tasks = [task for task in tasks if not task.get("closed", False)]
+    active_tasks = list(tasks)
     sections: dict[str, list[dict[str, Any]]] = {
         "now": [],
         "ready": [],
@@ -580,7 +572,6 @@ def add_task(title: str, priority: int | str | None = None, tags: list[str] | No
         "title": title,
         "status": status,
         "created": _now_date(),
-        "closed": False,
         "order": order,
     }
     if priority is not None:
@@ -615,7 +606,7 @@ def update_task(task_id: str, status: str | None = None, priority: int | str | N
                 deps: list[dict[str, str]] | None = None,
                 related: str | None = None, notes: str | None = None, replace_notes: bool = False,
                 evidence: str | None = None, replace_evidence: bool = False,
-                closed: bool | None = None, title: str | None = None,
+                title: str | None = None,
                 order: int | None = None,
                 replace_tags: bool = False) -> dict[str, Any]:
     _require_tasks_dir()
@@ -674,11 +665,9 @@ def update_task(task_id: str, status: str | None = None, priority: int | str | N
     if evidence is not None:
         _append_text_field(task, "evidence", evidence, replace=replace_evidence)
 
-    if closed is True:
-        task["closed"] = True
-        task["closed_at"] = _now_iso()
-    elif closed is False:
-        task["closed"] = False
+    # Strip legacy closed/closed_at fields if they survived from storage
+    task.pop("closed", None)
+    task.pop("closed_at", None)
 
     task["updated"] = _now_iso()
 
@@ -688,25 +677,13 @@ def update_task(task_id: str, status: str | None = None, priority: int | str | N
 
 
 def close_task(task_id: str, note: str | None = None, evidence: str | None = None) -> dict[str, Any]:
+    """Close a task by setting its status to close_status (default: done)."""
     _require_tasks_dir()
     s = _ensure_storage()
-    task = s.get_task(task_id)
-    if task is None:
-        raise ValueError(f"Task not found: {task_id}")
-
-    if task.get("closed", False):
-        raise ValueError(f"Task already closed: {task_id}")
-
-    task["closed"] = True
-    task["closed_at"] = _now_iso()
-    task["updated"] = _now_iso()
-    if note:
-        _append_text_field(task, "notes", note)
-    if evidence:
-        _append_text_field(task, "evidence", evidence)
-
-    s.save_task(task)
-    return task
+    meta = s.load_meta()
+    config = _ensure_config(meta)
+    close_status = config.get("close_status", "done")
+    return update_task(task_id, status=close_status, notes=note, evidence=evidence)
 
 
 def delete_task(task_id: str) -> None:

@@ -22,7 +22,6 @@ from agent_sommelier.tasks import (
     build_overview_data,
     close_task,
     delete_task,
-    load_closed_yaml,
     load_tasks_yaml,
     update_task,
 )
@@ -37,22 +36,21 @@ watcher: FileWatcher | None = None
 def _build_overview() -> dict[str, Any]:
     """Build the full overview dict from task data."""
     meta, tasks = load_tasks_yaml()
-    closed_list = load_closed_yaml()
     config = _ensure_config(meta)
     ready_status = config.get("ready_status", "todo")
     close_status = config.get("close_status", "done")
+    # All tasks live in one unified list; closed_list is empty (deprecated)
     overview_data = build_overview_data(
-        tasks, closed_list,
+        tasks, [],
         ready_status=ready_status,
         close_status=close_status,
     )
-    # Add done/closed section for the web dashboard
-    done_tasks = []
-    for t in closed_list:
-        task_view = dict(t)
-        task_view["hint"] = None
-        done_tasks.append(task_view)
-    done_tasks.sort(key=lambda t: t.get("closed_at", t.get("completed", t.get("created", ""))), reverse=True)
+    # Add done/completed section for the web dashboard
+    terminal_statuses = {"done", "cancelled", "abandoned"}
+    done_tasks = [dict(t) for t in tasks if t.get("status") in terminal_statuses]
+    for t in done_tasks:
+        t["hint"] = None
+    done_tasks.sort(key=lambda t: t.get("updated", t.get("created", "")), reverse=True)
     overview_data["done"] = done_tasks
     overview_data["counts"]["done"] = len(done_tasks)
     # Include status config so frontend knows available columns
@@ -61,13 +59,9 @@ def _build_overview() -> dict[str, Any]:
 
 
 def _get_task_dict(task_id: str) -> dict[str, Any] | None:
-    """Search active tasks then closed tasks for the given ID."""
+    """Search all tasks for the given ID."""
     _, tasks = load_tasks_yaml()
-    closed_list = load_closed_yaml()
     for t in tasks:
-        if t.get("id") == task_id:
-            return dict(t)
-    for t in closed_list:
         if t.get("id") == task_id:
             return dict(t)
     return None

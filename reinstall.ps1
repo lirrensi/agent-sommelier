@@ -1,4 +1,5 @@
 # reinstall.ps1 — Force reinstall agent-sommelier CLI tool
+# used for development purposes. 
 # Kills any processes locking the install dir, then reinstalls.
 param([switch]$NoKill)
 
@@ -22,5 +23,5 @@ if (-not $NoKill) {
 }
 
 Write-Host "Installing..." -ForegroundColor Yellow
-uv tool install . --force --reinstall
+uv tool install ".[all]" --force --reinstall
 Write-Host "Done." -ForegroundColor Green

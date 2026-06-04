@@ -229,39 +229,18 @@ class MonolithicYamlStorage(TaskStorage):
 
     def save_task(self, task: dict[str, Any]) -> None:
         task_id = task.get("id", "")
-        # Read both files
+        # Read the active tasks file (all tasks live in a single unified list)
         tasks_raw = self._read_yaml(self._tasks_file)
-        closed_raw = self._read_yaml(self._closed_file)
-
         tasks_list = self._extract_tasks(tasks_raw) if tasks_raw is not None else []
-        closed_list = self._extract_tasks(closed_raw) if closed_raw is not None else []
 
-        # Determine which list this task belongs to
-        is_closed = task.get("closed", False)
-
-        # Remove from both lists (in case of move)
+        # Remove from tasks list (in case of overwrite)
         tasks_list = [t for t in tasks_list if t.get("id") != task_id]
-        closed_list = [t for t in closed_list if t.get("id") != task_id]
+        tasks_list.append(task)
 
-        # Add to appropriate list
-        if is_closed:
-            closed_list.append(task)
-        else:
-            tasks_list.append(task)
-
-        # Write both files
+        # Write active file
         tasks_meta = self._extract_meta(tasks_raw) if tasks_raw is not None else {}
-        closed_meta = self._extract_meta(closed_raw) if closed_raw is not None else {}
-        if isinstance(closed_raw, dict) and "meta" in closed_raw:
-            closed_meta = closed_raw.get("meta", {})
-        if not isinstance(closed_meta, dict):
-            closed_meta = {}
-        closed_meta["total_closed"] = len(closed_list)
-
         tasks_data: dict[str, Any] = {"meta": tasks_meta, "tasks": tasks_list}
-        closed_data: dict[str, Any] = {"meta": closed_meta, "tasks": closed_list}
         self._write_yaml(self._tasks_file, tasks_data, TASKS_HEADER)
-        self._write_yaml(self._closed_file, closed_data, CLOSED_HEADER)
 
     def delete_task(self, task_id: str) -> None:
         tasks_raw = self._read_yaml(self._tasks_file)

@@ -157,7 +157,6 @@ def list_cmd(status: str | None, tags: tuple[str, ...], tags_any: tuple[str, ...
             click.echo(f"Invalid status '{status}'. Valid statuses: {', '.join(config['statuses'])}", err=True)
             sys.exit(1)
 
-    tasks = [t for t in tasks if not t.get("closed", False)]
     tasks = filter_tasks(tasks, status=status,
                          tags=list(tags) if tags else None,
                          tags_any=list(tags_any) if tags_any else None,
@@ -343,12 +342,11 @@ def show(task_id: str):
 @click.option("--replace-notes", is_flag=True, help="Replace notes instead of appending")
 @click.option("--evidence", "-e", help="Append evidence (use --replace-evidence to overwrite)")
 @click.option("--replace-evidence", is_flag=True, help="Replace evidence instead of appending")
-@click.option("--closed", "-c", is_flag=True, help="Close the task (move to closed.yaml)")
 def update(task_id: str, status: str | None, tags: tuple[str, ...], priority: str | None,
            claimed: str | None, created_by: str | None,
            deps: tuple[str, ...], related: str | None, notes: str | None,
            replace_notes: bool, evidence: str | None,
-           replace_evidence: bool, closed: bool):
+           replace_evidence: bool):
     parsed_deps = [_parse_dep_option(d) for d in deps] if deps else None
     try:
         task = update_task(
@@ -364,7 +362,6 @@ def update(task_id: str, status: str | None, tags: tuple[str, ...], priority: st
             replace_notes=replace_notes,
             evidence=evidence,
             replace_evidence=replace_evidence,
-            closed=closed if closed else None,
         )
         click.echo(f"Updated {task['id']}: {task['title']}")
     except FileNotFoundError as e:
@@ -410,7 +407,6 @@ def next_cmd(take: str, tag: str | None, priority: str | None,
     ready_status = config.get("ready_status", "todo")
     close_status = config.get("close_status", "done")
     candidates = [t for t in tasks if t.get("status") == ready_status]
-    candidates = [t for t in candidates if not t.get("closed", False)]
     # Exclude claimed tasks (claimed + in-progress or just claimed)
     candidates = [t for t in candidates if not t.get("claimed")]
     candidates = filter_tasks(candidates, tags=[tag] if tag else None, priority=priority)
@@ -451,7 +447,7 @@ def status(json_output: bool):
         click.echo(str(e), err=True)
         sys.exit(1)
 
-    active = [t for t in tasks if not t.get("closed", False)]
+    active = list(tasks)
     config = _ensure_config(meta)
     active_status = config.get("active_status", "in-progress")
     ready_status = config.get("ready_status", "todo")
@@ -534,31 +530,39 @@ def overview(json_output: bool):
 def history(tags: tuple[str, ...], tags_any: tuple[str, ...], text: str | None,
             related: str | None,
             limit: str, offset: int, json_output: bool):
-    closed_list = load_closed_yaml()
+    try:
+        meta, tasks = load_tasks_yaml()
+    except FileNotFoundError as e:
+        click.echo(str(e), err=True)
+        sys.exit(1)
 
-    closed_list = filter_tasks(closed_list,
-                               tags=list(tags) if tags else None,
-                               tags_any=list(tags_any) if tags_any else None,
-                               related=related)
+    config = _ensure_config(meta)
+    terminal_statuses = {"done", "cancelled", "abandoned"}
+    history_list = [t for t in tasks if t.get("status") in terminal_statuses]
+
+    history_list = filter_tasks(history_list,
+                                tags=list(tags) if tags else None,
+                                tags_any=list(tags_any) if tags_any else None,
+                                related=related)
 
     if text:
-        closed_list = search_tasks(closed_list, text)
+        history_list = search_tasks(history_list, text)
 
-    total = len(closed_list)
-    closed_list = list(reversed(closed_list))
-    closed_list = closed_list[offset:]
+    total = len(history_list)
+    history_list = list(reversed(history_list))
+    history_list = history_list[offset:]
 
     if limit == "all":
-        count = len(closed_list)
+        count = len(history_list)
     else:
         try:
             count = int(limit)
         except ValueError:
             click.echo(f"Invalid --limit value: {limit}. Use a number or 'all'.", err=True)
             sys.exit(1)
-        count = min(count, len(closed_list))
+        count = min(count, len(history_list))
 
-    display = closed_list[:count]
+    display = history_list[:count]
 
     if json_output:
         click.echo(json.dumps(display, indent=2))
@@ -570,19 +574,18 @@ def history(tags: tuple[str, ...], tags_any: tuple[str, ...], text: str | None,
 
     table = Table(title="Completed Tasks")
     table.add_column("ID", style="cyan")
+    table.add_column("Status", style="yellow")
     table.add_column("Priority", style="magenta")
     table.add_column("Title", style="white")
-    table.add_column("Completed", style="green")
     table.add_column("Tags", style="dim")
 
     for t in display:
-        completed_val = t.get("closed_at") or t.get("completed") or ""
-        completed_display = completed_val[:10] if completed_val else "?"
+        completed_display = t.get("status", "?")
         table.add_row(
             t.get("id", "?"),
+            completed_display,
             _format_priority(t.get("priority")),
             t.get("title", "?"),
-            completed_display,
             ", ".join(t.get("tags", []) or []),
         )
 
@@ -731,7 +734,7 @@ def ready(take: str, tag: str | None, json_output: bool):
     config = _ensure_config(meta)
     ready_status = config.get("ready_status", "todo")
     close_status = config.get("close_status", "done")
-    candidates = [t for t in tasks if t.get("status") == ready_status and not t.get("closed", False) and not _is_task_blocked(t, tasks, closed_list, close_status=close_status) and not t.get("claimed")]
+    candidates = [t for t in tasks if t.get("status") == ready_status and not _is_task_blocked(t, tasks, closed_list, close_status=close_status) and not t.get("claimed")]
 
     if tag:
         candidates = [t for t in candidates if tag in (t.get("tags") or [])]
@@ -777,7 +780,7 @@ def blocked(json_output: bool):
 
     config = _ensure_config(meta)
     close_status = config.get("close_status", "done")
-    candidates = [t for t in tasks if not t.get("closed", False) and _is_task_blocked(t, tasks, closed_list, close_status=close_status)]
+    candidates = [t for t in tasks if _is_task_blocked(t, tasks, closed_list, close_status=close_status)]
 
     if json_output:
         output = []

@@ -9,12 +9,8 @@
 from __future__ import annotations
 
 from .core import (  # noqa: F401
-    CLOSED_FILE_NAME,
-    CLOSED_HEADER,
     INBOX_FILE_NAME,
     TASKS_DIR_NAME,
-    TASKS_FILE_NAME,
-    TASKS_HEADER,
     VALID_DEP_TYPES,
     VALID_PRIORITIES,
     VALID_SOURCES,
