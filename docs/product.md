@@ -690,6 +690,167 @@ A status is just a column name. Move the card, change the status. Everything els
 
 ---
 
+## Tool: tmx — Tmux/Psmux Session Control
+
+Cross-platform tmux/psmux wrapper for agent-driven terminal session management.
+
+**Installation:** Ships with agent-sommelier-cli. No extra dependencies.
+
+### Prerequisites
+
+| Platform | Tool | Install |
+|----------|------|---------|
+| Linux | tmux | `apt install tmux` |
+| macOS | tmux | `brew install tmux` |
+| Windows | psmux | `tmx install` |
+
+### Commands
+
+#### `tmx install`
+
+Ensure tmux or psmux is available on this system. On Windows, automatically attempts installation via winget, scoop, choco, or cargo.
+
+#### `tmx create NAME [CMD]`
+
+Create a new detached session with generous scrollback (10000 lines).
+
+**Arguments:**
+- `NAME` — Session name (required)
+- `CMD` — Optional initial command (e.g. `ssh user@host`)
+
+**Output:**
+```
+Created session: mysession
+```
+
+#### `tmx rm NAME`
+
+Kill a session.
+
+**Arguments:**
+- `NAME` — Session name
+
+**Output:**
+```
+Killed session: mysession
+```
+
+#### `tmx sk NAME "CMD"`
+
+Send keys to a session (fire and forget).
+
+**Arguments:**
+- `NAME` — Session name
+- `CMD` — Command string to type and execute
+
+**Behavior:**
+- Types the command and presses Enter
+- Returns immediately without waiting or reading output
+
+#### `tmx r NAME`
+
+Read session output (full scrollback buffer).
+
+**Arguments:**
+- `NAME` — Session name
+
+**Behavior:**
+- Captures the entire scrollback (up to 10000 lines)
+- Prints to stdout
+
+#### `tmx run NAME "CMD" [--timeout N]`
+
+Send keys, wait, and read output — the primary agent workflow.
+
+**Arguments:**
+- `NAME` — Session name
+- `CMD` — Command to execute
+
+**Options:**
+- `--timeout`, `-t` — Seconds to wait before reading output (default: 5)
+
+**Behavior:**
+1. Sends the command and presses Enter
+2. Waits N seconds (default 5)
+3. Captures and prints the scrollback output
+
+**Examples:**
+```bash
+tmx create myserver "ssh admin@prod.example.com"
+tmx run myserver "hostname"
+tmx run myserver "tail -100 /var/log/syslog" --timeout 10
+tmx sk myserver "long-running-task"
+tmx r myserver
+```
+
+#### `tmx list [--json]`
+
+List all sessions.
+
+**Options:**
+- `--json` — Output as JSON
+
+**Output (human-readable):**
+- Rich table with columns: Name, Windows, Status
+
+**Output (JSON):**
+```json
+[
+    {
+        "name": "myserver",
+        "windows": 1,
+        "status": "detached"
+    }
+]
+```
+
+#### `tmx manager`
+
+Interactive session picker (human-friendly TUI). Browse tmux sessions with arrow keys, attach, kill, or create new ones. After detaching from a session (Ctrl+B then d), returns to the picker.
+
+**Requires:** An interactive terminal (TTY).
+
+**Behavior:**
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` | Navigate sessions |
+| `Enter` | Attach to selected session or create new (on "+ new session" row) |
+| `k` | Kill selected session |
+| `n` | Create new session (detached, no attach) |
+| `q` | Quit |
+
+When attaching, the session name is prompted. Leaving it empty auto-generates a name from the current working directory (e.g. `myproject-fox`).
+
+**Example flow:**
+```bash
+$ tmx manager
+  tmx  session picker
+    +  new session
+    •  server-prod    1w
+    •  api-dev        2w
+    @  db-admin       1w
+```
+
+### Platform Behavior
+
+| Platform | Backend | Notes |
+|----------|---------|-------|
+| Windows | psmux | First-class support via `tmx install` |
+| Windows | tmux (WSL) | Falls back if psmux unavailable |
+| macOS | tmux | System or Homebrew |
+| Linux | tmux | System package manager |
+
+### Edge Cases
+
+- No tmux/psmux found: `tmx install` guides installation
+- Session not found: error message with name, exit 1
+- Session already exists on create: error message, exit 1
+- List with no sessions: "No sessions." message (exit 0)
+- Empty scrollback on `r` or `run`: prints nothing
+
+---
+
 ## Skill: task-system — How to Use Tasks Well
 
 Quick guidance for the in-repo task CLI. It explains statuses, dependency types, priority ordering, inbox flow, and the ready/blocked queues.
@@ -733,50 +894,44 @@ Control tmux/psmux sessions programmatically for SSH, REPLs, and parallel proces
 
 **Location:** `skills/tmux/`
 
-### Helper: tmx
+**Primary CLI tool:** `tmx` — ships with agent-sommelier-cli (see `## Tool: tmx` above).
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `tmx install` | Ensure tmux/psmux is available (auto-install on Windows) |
+| `tmx create <name> [cmd]` | Create session, optionally run init cmd |
+| `tmx rm <name>` | Kill session |
+| `tmx sk <name> "<cmd>"` | Send keys (fire and forget) |
+| `tmx r <name>` | Read output (full scrollback) |
+| `tmx run <name> "<cmd>" [--timeout N]` | Send + wait + read |
+| `tmx list [--json]` | List all sessions |
+
+### Quick Start
 
 ```bash
-tmx new <name> [cmd]       # Create session
-tmx send <session> "<cmd>" # Send keys
-tmx capture <session> [n]  # Capture output (default 500 lines)
-tmx sync <session> "<cmd>" # Send + wait + capture
-tmx list                   # List sessions
-tmx kill <session>         # Kill session
+# Create an SSH session
+tmx create server "ssh user@myserver.com"
+
+# Run commands, get output
+tmx run server "hostname"
+tmx run server "tail -100 /var/log/syslog" --timeout 10
+
+# Fire and forget
+tmx sk server "long-running-build.sh"
+
+# Read output later
+tmx r server
+
+# List and clean up
+tmx list
+tmx rm server
 ```
 
-### Sync Modes
+### Fallback Scripts
 
-- `--prompt <pattern>` / `-Prompt <pattern>` — Wait for prompt pattern
-- `--timeout <sec>` / `-Timeout <sec>` — Fixed wait N seconds
-
-### Primary Use Case: SSH
-
-```bash
-tmx new server "ssh user@myserver.com"
-tmx sync server "hostname"
-tmx sync server "tail -100 /var/log/app.log" --timeout 5
-tmx capture server
-```
-
-### Installation
-
-| Platform | Tool | Install |
-|----------|------|---------|
-| Linux | tmux | `apt install tmux` |
-| macOS | tmux | `brew install tmux` |
-| Windows | psmux | `winget install psmux` |
-
-### Windows (psmux)
-
-psmux is a native Windows tmux implementation — same commands, same config. 95%+ tmux syntax compatible.
-
-```powershell
-winget install psmux
-# or: scoop install psmux
-# or: choco install psmux
-```
-
-If issues: download from https://github.com/marlocarlo/psmux/releases
+Shell scripts at `skills/tmux/scripts/tmx.sh` (bash) and `tmx.ps1` (PowerShell) are available as fallbacks when the Python CLI tool is not installed.
 
 ---
 

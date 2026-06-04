@@ -55,6 +55,7 @@ Pick the tools you need. Leave the rest. They all work independently — and the
 | `essh` | SSH profile manager — no more `~/.ssh/config` roulette | Built-in |
 | `screenshot` | Screen capture, zero fuss | `uv tool install "git+https://github.com/lirrensi/agent-sommelier"` |
 | `tasks` | In-repo task management with deps & queues | Built-in |
+| `tmx` | tmux/psmux session control for agents | Built-in |
 | `skill-store` | On-demand skill registry — load only what you need | Built-in |
 
 ### Skills — Agent instructions for self-installing tools

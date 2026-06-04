@@ -1223,6 +1223,138 @@ Per-profile in `profiles.json`:
 
 ---
 
+## Component: tmx
+
+### File
+`src/agent_sommelier/tmx.py`
+
+### Entry Point
+```python
+tmx = "agent_sommelier.tmx:cli"
+```
+
+### Commands
+- `tmx install` — Ensure tmux/psmux is available
+- `tmx create NAME [CMD]` — Create a new detached session
+- `tmx rm NAME` — Kill a session
+- `tmx sk NAME "CMD"` — Send keys (fire and forget)
+- `tmx r NAME` — Read full scrollback
+- `tmx run NAME "CMD" [--timeout N]` — Send + wait + read
+- `tmx list [--json]` — List all sessions
+- `tmx manager` — Interactive session picker (human TUI)
+
+### Detection Logic
+
+```
+_find_tmux() -> str
+    |
+    +-- platform.system() == "Windows":
+    |       |
+    |       +-- shutil.which("psmux") --> "psmux"
+    |       +-- shutil.which("tmux")/("tmux.exe") --> "tmux"
+    |       +-- not found --> raise ClickException("Run 'tmx install'")
+    |
+    +-- platform.system() != "Windows":
+            |
+            +-- shutil.which("tmux") --> "tmux"
+            +-- not found --> raise ClickException("Run 'tmx install'")
+```
+
+### Command Implementation
+
+```
+create(name, cmd=None)
+    |
+    +-- _has_session(name)? --> error "already exists"
+    +-- send_keys: new-session -d -s {name} -x 120 -y 40
+    +-- set-option history-limit 10000
+    +-- if cmd: send-keys + Enter
+    +-- print "Created session: {name}"
+
+rm(name)
+    +-- _ensure_session(name)
+    +-- kill-session -t {name}
+    +-- print "Killed session: {name}"
+
+sk(name, cmd_str)
+    +-- _ensure_session(name)
+    +-- send-keys -l -- {cmd_str}
+    +-- send-keys Enter
+
+r(name)
+    +-- _ensure_session(name)
+    +-- capture-pane -p -J -t {name} -S -50000
+    +-- print captured stdout
+
+run(name, cmd_str, timeout=5)
+    +-- sk (send-keys logic)
+    +-- time.sleep(timeout)
+    +-- r (capture logic)
+
+list(json=False)
+    +-- list-sessions -F format string
+    +-- if no sessions: print "No sessions."
+    +-- if --json: json.dumps(list of dicts)
+    +-- else: Rich Table (Name, Windows, Status)
+
+install()
+    +-- if already installed: print "✓ tmux found"
+    +-- Windows: try winget -> scoop -> choco -> cargo -> manual URL
+    +-- macOS: suggest/run brew install tmux
+    +-- Linux: detect package manager, print install command
+
+manager()
+    +-- if not isatty(): error "needs interactive terminal"
+    +-- loop:
+    |       +-- _get_session_list() -> list of sessions
+    |       +-- _render_picker(sessions, cursor)
+    |       +-- _getch() -> key
+    |       +-- UP/DOWN: adjust cursor (0 = "+ new session")
+    |       +-- Enter + cursor==0: prompt name -> create -> attach (blocking)
+    |       +-- Enter + cursor>0: attach to selected (blocking)
+    |       +-- k + cursor>0: kill selected, refresh
+    |       +-- n: prompt name -> create (no attach), refresh
+    |       +-- q: exit loop
+```
+
+### Platform Install Behavior
+
+| Platform | Attempt Order | Auto? |
+|----------|---------------|-------|
+| Windows | winget, scoop, choco, cargo | Yes (tries each) |
+| macOS | brew | Yes (if brew exists) |
+| Linux | apt, dnf, pacman, apk | No (prompt only) |
+
+### Manager Input Handling
+
+```
+_getch() -> str
+    |
+    +-- Windows (msvcrt):
+    |       |
+    |       +-- msvcrt.getch() reads one byte
+    |       +-- \xe0 prefix = arrow key, read second byte
+    |       +-- H/P/M/K mapped to UP/DOWN/RIGHT/LEFT
+    |       +-- Ctrl+C (\x03) raises KeyboardInterrupt
+    |
+    +-- Unix (termios):
+            |
+            +-- tty.setraw(fd), read(1)
+            +-- \x1b prefix = escape sequence, read(2)
+            +-- [A/[B/[C/[D mapped to UP/DOWN/RIGHT/LEFT
+            +-- Ctrl+C (\x03) raises KeyboardInterrupt
+```
+
+### Edge Cases
+
+- No tmux binary: deferred to install command with platform guidance
+- Session collision: clear error on create
+- Session missing: clear error on send/read/kill
+- Empty list: graceful "No sessions." message
+- Manager invoked without TTY: error message, exit 1
+
+---
+
 ## Dependencies Graph
 
 ```

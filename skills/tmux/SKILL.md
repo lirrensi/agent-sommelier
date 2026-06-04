@@ -73,56 +73,54 @@ psmux -V
 ## Quick Start
 
 ```bash
-# Unix
-tmux -V
-tmx new mysession
-tmx sync mysession "ls -la"
-tmx capture mysession
-tmx kill mysession
+# Ensure tmux/psmux is available
+tmx install
+
+# Create a session and run commands
+tmx create mysession
+tmx run mysession "ls -la"
+tmx r mysession
+tmx rm mysession
 ```
 
 ```powershell
-# Windows
-psmux -V
-tmx new mysession
-tmx sync mysession "Get-ChildItem"
-tmx capture mysession
-tmx kill mysession
+# Windows — tmx install handles psmux automatically
+tmx install
+tmx create mysession
+tmx run mysession "Get-ChildItem"
+tmx r mysession
+tmx rm mysession
 ```
 
 ---
 
 ## Helper: tmx
 
-Scripts at `{baseDir}/scripts/`:
-- `tmx.sh` — Bash version (Linux/macOS)
-- `tmx.ps1` — PowerShell version (Windows, works everywhere)
+**Primary:** Python CLI tool (`tmx`) — installable via agent-sommelier-cli.
+**Fallback:** Shell scripts at `skills/tmux/scripts/tmx.sh` (bash) and `tmx.ps1` (PowerShell).
 
 ### Commands
 
 | Command | Description |
 |---------|-------------|
-| `tmx new <name> [cmd]` | Create session, optionally run cmd |
-| `tmx send <session> "<cmd>"` | Send keys (fire and forget) |
-| `tmx capture <session> [lines]` | Capture output (default 500 lines) |
-| `tmx sync <session> "<cmd>"` | Send + wait + capture |
-| `tmx list` | List all sessions |
-| `tmx kill <session>` | Kill session |
-| `tmx attach <session>` | Attach interactively |
+| `tmx install` | Ensure tmux/psmux is available (auto-install on Windows) |
+| `tmx create <name> [cmd]` | Create session, optionally run init cmd |
+| `tmx rm <name>` | Kill session |
+| `tmx sk <name> "<cmd>"` | Send keys (fire and forget) |
+| `tmx r <name>` | Read output (full scrollback) |
+| `tmx run <name> "<cmd>" [--timeout N]` | Send + wait N seconds + read output |
+| `tmx list [--json]` | List all sessions (rich table or JSON) |
+| `tmx manager` | Interactive session picker (arrow-key TUI for humans) |
 
-### Sync Modes
+### Sync (send + wait + read)
+
+`tmx run` uses a fixed timeout (default 5s, configurable via `--timeout` or `-t`).
+No prompt regex, no fragile waiting — just send, wait, and capture.
 
 ```bash
-# Wait for shell prompt (default)
-tmx sync server "pip install numpy"
-
-# Fixed timeout mode
-tmx sync server "make build" --timeout 30   # Bash
-tmx sync server "make build" -Timeout 30    # PowerShell
-
-# Custom prompt pattern
-tmx sync server "python script.py" --prompt "DONE>"  # Bash
-tmx sync server "python script.py" -Prompt "DONE>"   # PowerShell
+tmx run server "pip install numpy"
+tmx run server "make build" --timeout 30
+tmx run server "python script.py" -t 10
 ```
 
 ---
@@ -133,91 +131,77 @@ SSH through tmux gives persistent sessions that survive disconnects.
 
 ```bash
 # Create SSH session
-tmx new server "ssh user@myserver.com"
+tmx create server "ssh user@myserver.com"
 
-# Wait for password prompt or SSH ready
-tmx capture server 20   # Check where we are
+# Wait a moment for SSH to connect, then check
+tmx run server "hostname" --timeout 3
 
 # Send password (if needed)
-tmx send server "mypassword"
-
-# Wait for shell prompt on remote
-tmx sync server "hostname" --prompt '\$'
+tmx sk server "mypassword"
 
 # Run remote commands
-tmx sync server "cd /var/log && ls -la"
-tmx sync server "tail -100 nginx/access.log" --timeout 5
+tmx run server "cd /var/log && ls -la"
+tmx run server "tail -100 nginx/access.log" --timeout 5
 
-# Long-running remote task
-tmx send server "docker logs -f mycontainer"
-# Later: capture output
-tmx capture server 500
+# Long-running remote task (fire and forget)
+tmx sk server "docker logs -f mycontainer"
+# Later: read output
+tmx r server
 
 # Detach and return later - SSH persists!
 tmx list  # session still there
-tmx capture server  # get latest output
+tmx r server  # get latest output
 ```
 
 **SSH with sudo:**
 ```bash
-tmx new prod "ssh admin@prod-server"
-tmx sync prod "sudo tail -f /var/log/syslog" --prompt '\[sudo\]'
-tmx send prod "sudo_password"
-tmx capture prod 200
+tmx create prod "ssh admin@prod-server"
+tmx sk prod "sudo_password"
+tmx run prod "tail -100 /var/log/syslog" --timeout 5
 ```
 
 ---
 
 ## Pattern 2: Background Process Monitoring
 
-Monitor long-running processes in tmux. Useful when already working in tmux context.
+Monitor long-running processes in tmux.
 
 ```bash
 # Start a server
-tmx new api "cd /app && python api.py"
-tmx sync api "echo 'Server starting...'" --timeout 3
+tmx create api "cd /app && python api.py"
+tmx run api "echo 'Server starting...'" --timeout 3
 
 # Check if running
-tmx capture api 30 | grep -q "Listening" && echo "API is up"
+tmx r api | grep -q "Listening" && echo "API is up"
 
 # Monitor logs
-tmx capture api 100
-
-# Tail mode (continuous capture)
-for i in {1..10}; do
-  tmx capture api 5
-  sleep 2
-done
+tmx r api
 
 # Multiple services
-tmx new db "docker run --name postgres -e POSTGRES_PASSWORD=pass postgres"
-tmx new redis "redis-server"
+tmx create db "docker run --name postgres -e POSTGRES_PASSWORD=pass postgres"
+tmx create redis "redis-server"
 
 # Check all
 tmx list
-tmx capture db 20
-tmx capture redis 20
+tmx r db
+tmx r redis
 ```
 
 ---
 
 ## Pattern 3: Interactive REPL
 
-REPLs work but may need prompt tuning. Use `--prompt` for custom prompts.
+Use `tmx run` with appropriate timeout for REPL interaction.
 
 ```bash
 # Python (standard REPL)
-tmx new python "python3 -q"
-tmx sync python "import sys; print(sys.version)"
-tmx sync python "2 + 2"
-
-# IPython (custom prompt)
-tmx new ipy "ipython"
-tmx sync ipy "print('hello')" --prompt "In \[.*\]:"
+tmx create python "python3 -q"
+tmx run python "import sys; print(sys.version)"
+tmx run python "2 + 2" --timeout 3
 
 # Node.js
-tmx new node "node -i"
-tmx sync node "1+1" --prompt ">"
+tmx create node "node -i"
+tmx run node "1+1" --timeout 3
 ```
 
 ---
@@ -227,18 +211,18 @@ tmx sync node "1+1" --prompt ">"
 ```bash
 # Spin up multiple coding agents
 for i in 1 2 3; do
-  tmx new "agent-$i" "cd /tmp/project$i && codex --yolo 'Fix bugs'"
+  tmx create "agent-$i" "cd /tmp/project$i && codex --yolo 'Fix bugs'"
 done
 
 # Poll for completion
 for s in agent-1 agent-2 agent-3; do
-  if tmx capture "$s" 20 | grep -q "completed"; then
+  if tmx r "$s" | grep -q "completed"; then
     echo "$s: DONE"
   fi
 done
 
 # Get results
-tmx capture agent-1 2000
+tmx r agent-1
 ```
 
 ---
@@ -273,11 +257,12 @@ tmx capture agent-1 2000
 
 ## Gotchas
 
-- **REPL prompts**: IPython, IRB, etc. use different prompts. Use `--prompt` to match.
-- **Named sessions only**: No socket complexity
-- **Prompt detection**: Default `(\$|❯|#|>|>>>)` covers most shells
-- **psmux is fresh**: If issues, check GitHub releases for updates
-- **Windows needs PowerShell 7+**: Install with `winget install Microsoft.PowerShell`
+- **Timeout-based sync**: `tmx run` uses a fixed timeout (default 5s). For long commands, increase with `--timeout 30`.
+- **Named sessions only**: No socket complexity — just session names.
+- **Initial command on create**: `tmx create server "ssh user@host"` runs the command immediately. Use for SSH, REPLs, and services.
+- **No attach**: tmx is agent-focused — no TTY attach capability. Use `tmux attach -t <name>` directly if needed.
+- **psmux is fresh**: If issues, check GitHub releases for updates.
+- **Windows needs PowerShell 7+**: Install with `winget install Microsoft.PowerShell`.
 
 ---
 

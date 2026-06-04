@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-sommelier-cli"
-version = "1.2.11"
+version = "1.3.0"
 description = "A capability sommelier for your coding agent — tools, skills, memory, tasks"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -48,6 +48,7 @@ screenshot = "agent_sommelier.screenshot:main"
 tasks = "agent_sommelier.tasks:main"
 skill-store = "agent_sommelier.skill_store.cli:main"
 skill-store-mcp = "agent_sommelier.skill_store.mcp:main"
+tmx = "agent_sommelier.tmx:cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_sommelier"]
