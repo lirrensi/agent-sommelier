@@ -1355,6 +1355,122 @@ _getch() -> str
 
 ---
 
+## Component: amun
+
+### File
+`src/agent_sommelier/amun.py`
+
+### Entry Point
+```python
+amun = "agent_sommelier.amun:main"
+```
+
+### Commands
+- `amun init` — Write default config to `~/.amun/config.toml`
+- `amun ask "QUESTION"` — Send question to configured LLM and stream response
+
+### Config Structure (`~/.amun/config.toml`)
+
+```toml
+endpoint = "https://api.openai.com/v1/chat/completions"
+model = "o3-4h"
+api_key = "$AMUN_API_KEY"
+
+[body]
+reasoning_effort = "high"
+```
+
+- Parsed with `tomllib` (stdlib in Python ≥ 3.11) with a manual fallback for Python 3.10
+- `$VAR` values in config are resolved from the environment
+- `[body]` section is merged into the POST request body as extra JSON fields
+
+### Implementation Flow
+
+```
+amun ask "QUESTION" --system "..." --model X --no-stream
+    |
+    +-- load_config()
+    |       |
+    |       +-- read ~/.amun/config.toml
+    |       +-- tomllib (3.11+) → fallback parser (3.10)
+    |       +-- resolve $ENV_VAR references
+    |       +-- return {"endpoint", "model", "api_key", "body"}
+    |
+    +-- build request body:
+    |       |
+    |       +-- { model, messages: [system, user], stream: bool }
+    |       +-- merge config["body"] (reasoning_effort, …)
+    |       +-- CLI flags (--model, --no-stream) take precedence
+    |
+    +-- _make_request(endpoint, api_key, body_bytes, timeout)
+    |       |
+    |       +-- urllib.request.Request(POST, headers, data)
+    |       +-- urllib.request.urlopen(timeout=120)
+    |       |
+    |       +-- HTTPError  → ClickException("API error {status}: {body}")
+    |       +-- URLError   → ClickException("Connection error: {reason}")
+    |       +-- OSError    → ClickException("Request failed: {msg}")
+    |
+    +-- [streaming (default)]:
+    |       |
+    |       +-- _handle_streaming_response(response, console)
+    |               |
+    |               +-- parse_sse_lines() → generator of JSON dicts
+    |               |       |
+    |               |       +-- read 4096-byte chunks
+    |               |       +-- buffer & split on "\n\n"
+    |               |       +-- extract "data: {...}" lines
+    |               |       +-- "[DONE]" → stop
+    |               |       +-- yield json.loads(payload)
+    |               |
+    |               +-- for each parsed event:
+    |               |       |
+    |               |       +-- delta.reasoning / delta.reasoning_content?
+    |               |       |       → write dim yellow to stdout, flush
+    |               |       +-- delta.content?
+    |               |               → write to stdout, flush
+    |               |
+    |               +-- return full content string
+    |
+    +-- [non-streaming (--no-stream)]:
+            |
+            +-- _handle_non_streaming_response(response, console)
+                    |
+                    +-- json.loads(response body)
+                    +-- choices[0].message.reasoning?
+                    |       → console.print dim yellow
+                    +-- choices[0].message.content?
+                            → console.print(rich.markdown.Markdown(...))
+```
+
+### SSE Parser
+
+```python
+def parse_sse_lines(response):
+    """Yield parsed JSON objects from an SSE stream."""
+    buffer = ""
+    for chunk in iter(lambda: response.read(4096), b""):
+        buffer += chunk.decode("utf-8", errors="replace")
+        while "\n\n" in buffer:
+            block, buffer = buffer.split("\n\n", 1)
+            for line in block.split("\n"):
+                if line.startswith("data: "):
+                    data = line[6:].strip()
+                    if data == "[DONE]":
+                        return
+                    if data:
+                        yield json.loads(data)
+```
+
+### Dependencies
+- **stdlib only:** `urllib.request`, `urllib.error`, `json`, `os`, `sys`, `pathlib`, and either `tomllib` (≥ 3.11) or a built-in fallback
+- **click** — CLI framework (existing core dep)
+- **rich** — Markdown rendering, styling (existing core dep)
+
+No new external dependencies are introduced.
+
+---
+
 ## Dependencies Graph
 
 ```

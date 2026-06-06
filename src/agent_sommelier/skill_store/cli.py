@@ -775,6 +775,78 @@ def cmd_unpin(ctx: click.Context, slug: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# COMMAND: localize
+# ---------------------------------------------------------------------------
+
+
+@click.command()
+@click.argument("slug")
+@click.option(
+    "--symlink", "-l",
+    is_flag=True,
+    default=False,
+    help="Create a symlink instead of copying",
+)
+@click.option(
+    "--target", "-t",
+    default=".agents/skills",
+    type=click.Path(path_type=Path),
+    show_default=True,
+    help="Target directory (relative to cwd)",
+)
+@click.pass_context
+def cmd_localize(ctx: click.Context, slug: str, symlink: bool, target: Path) -> None:
+    """Copy (or symlink) a skill from the store into the local project.
+
+    Default target is .agents/skills/<slug>/ — the standard location
+    where agent frameworks (Amp, Cline, Cursor, etc.) look for skills.
+    """
+    store: Path = ctx.obj["store"]
+    _check_store(store)
+    index = load_index(store)
+
+    skill = find_skill(index, slug)
+    if not skill:
+        console.print(f"[red]{e('✗', 'x')}[/] Skill [bold]'{slug}'[/] not found.")
+        suggestions = [s["slug"] for s in index["skills"] if slug in s["slug"]]
+        if suggestions:
+            console.print(f"   Did you mean: {', '.join(suggestions)}?")
+        else:
+            console.print(f"   Run [bold]skill-store list[/] to see available skills.")
+        sys.exit(1)
+
+    skill_path = store / skill["path"]
+    dest = (target.resolve() / slug)
+
+    if dest.exists():
+        console.print(f"[red]{e('✗', 'x')}[/] Target already exists: [bold]{dest}[/]")
+        console.print("   Remove it first, or choose a different target.")
+        sys.exit(1)
+
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
+        if symlink:
+            if sys.platform == "win32":
+                console.print(
+                    f"[yellow]{e('⚠', '!')}[/] Windows symlinks require "
+                    "Admin privileges or Developer Mode."
+                )
+            os.symlink(str(skill_path.resolve()), str(dest), target_is_directory=True)
+            console.print(
+                f"[green]{e('✓', '+')}[/] Symlinked [bold]{slug}[/] → {dest}"
+            )
+        else:
+            shutil.copytree(skill_path, dest)
+            console.print(
+                f"[green]{e('✓', '+')}[/] Localized [bold]{slug}[/] → {dest}"
+            )
+    except OSError as exc:
+        console.print(f"[red]{e('✗', 'x')}[/] Failed: {exc}")
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
 # COMMAND: status
 # ---------------------------------------------------------------------------
 
@@ -1146,6 +1218,7 @@ cli.add_command(cmd_list, "list")
 cli.add_command(cmd_search, "search")
 cli.add_command(cmd_pin, "pin")
 cli.add_command(cmd_unpin, "unpin")
+cli.add_command(cmd_localize, "localize")
 cli.add_command(cmd_groups, "groups")
 cli.add_command(cmd_status, "status")
 cli.add_command(cmd_version, "version")

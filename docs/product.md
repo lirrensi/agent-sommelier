@@ -851,6 +851,85 @@ $ tmx manager
 
 ---
 
+## Tool: amun — Deep Thinking LLM Question-Asker
+
+Send complex questions to a configurable LLM endpoint and stream the response (including reasoning from thinking models like OpenAI o3).
+
+### Configuration
+
+Config lives at `~/.amun/config.toml`:
+
+```toml
+endpoint = "https://api.openai.com/v1/chat/completions"
+model = "o3-4h"
+api_key = "$AMUN_API_KEY"
+
+[body]
+reasoning_effort = "high"
+```
+
+- `endpoint` — Any OpenAI-compatible `/v1/chat/completions` URL
+- `model` — Model name to use
+- `api_key` — Plain text or `$ENV_VAR` reference; prefixed with `$` to resolve from the environment
+- `[body]` — Extra JSON fields merged into the request body (e.g. `reasoning_effort`, `max_completion_tokens`)
+
+### Commands
+
+#### `amun init`
+
+Create a default config file at `~/.amun/config.toml`.
+
+```
+$ amun init
+Config created at C:\Users\you\.amun\config.toml
+Edit this file with your endpoint, model, and API key.
+```
+
+#### `amun ask "QUESTION"`
+
+Send a question to the configured LLM.
+
+**Arguments:**
+- `QUESTION` — The question to ask (positional, required)
+
+**Options:**
+- `--system`, `-s` — System prompt (default: *"You are a senior architect and engineer. Think deeply before answering."*)
+- `--model`, `-m` — Override the configured model
+- `--no-stream` — Disable streaming; collect the full response then print
+- `--timeout` — HTTP request timeout in seconds (default: 120)
+
+**Examples:**
+
+```bash
+# Simple streaming question
+amun ask "What is the complexity of quicksort?"
+
+# With custom system prompt
+amun ask "Explain the CAP theorem" --system "You are a distributed systems professor."
+
+# Override model
+amun ask "Write a Python decorator" --model "gpt-4o"
+
+# Non-streaming with Markdown rendering
+amun ask "Write a detailed comparison" --no-stream
+```
+
+**Behavior:**
+1. Loads config from `~/.amun/config.toml`
+2. Sends an HTTP POST to the configured endpoint
+3. **Streaming (default):** Reads SSE events, prints tokens as they arrive. If the model emits `reasoning` or `reasoning_content` fields, they appear in dim yellow before the final answer.
+4. **Non-streaming (`--no-stream`):** Collects the full response and renders the answer with `rich.markdown.Markdown`.
+5. On HTTP or connection errors, displays a clear message and exits with code 1.
+
+**Edge Cases:**
+- Config not found: prompts user to run `amun init`
+- Environment variable not set: clear error message
+- API error: prints HTTP status and response body
+- Connection timeout: error message with timeout value
+- Malformed SSE lines in stream: silently skipped
+
+---
+
 ## Skill: task-system — How to Use Tasks Well
 
 Quick guidance for the in-repo task CLI. It explains statuses, dependency types, priority ordering, inbox flow, and the ready/blocked queues.
