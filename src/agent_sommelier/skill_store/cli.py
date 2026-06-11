@@ -392,6 +392,39 @@ def cmd_load(ctx: click.Context, slug: str, json: bool) -> None:
         resolved = skill_path.resolve()
         console.print(f"[bold]Path:[/]     {resolved}")
         console.print(f"[bold]SKILL.md:[/] {resolved / 'SKILL.md'}")
+        console.print(f"[bold]Name:[/]     {skill.get('name', slug)}")
+        desc = clean_desc(skill.get("description", ""))
+        if desc:
+            console.print(f"[bold]About:[/]     {desc}")
+        else:
+            console.print(f"  [dim]<no description>[/]")
+
+        # Snippet preview of SKILL.md (skip frontmatter)
+        skill_md = resolved / "SKILL.md"
+        if skill_md.exists():
+            md_lines = skill_md.read_text(encoding="utf-8").splitlines()
+            # Locate content after YAML frontmatter
+            content_start = 0
+            if md_lines and md_lines[0].strip() == "---":
+                for j in range(1, min(len(md_lines), 50)):
+                    if md_lines[j].strip() == "---":
+                        content_start = j + 1
+                        break
+            # Skip leading blank lines after frontmatter
+            while content_start < len(md_lines) and md_lines[content_start].strip() == "":
+                content_start += 1
+            preview = md_lines[content_start:content_start + 20]
+            if preview:
+                console.print()
+                console.print("[bold]Preview:[/]")
+                for line in preview:
+                    console.print(f"  [dim]{line}[/]")
+                remaining = len(md_lines) - content_start - len(preview)
+                if remaining > 0:
+                    console.print(f"  [dim]... ({remaining} more line{'s' if remaining != 1 else ''})[/]")
+            else:
+                console.print(f"  [dim]<empty content>[/]")
+
         console.print()
         rich_tree = build_rich_tree(resolved)
         console.print(rich_tree)
