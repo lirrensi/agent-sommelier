@@ -1851,5 +1851,29 @@ def import_(archive: Path, force: bool) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
+@main.command(hidden=True)
+@click.argument("shell", type=click.Choice(["bash", "zsh", "fish", "powershell"]), default="bash")
+@click.pass_context
+def completions(ctx: click.Context, shell: str) -> None:
+    """Print shell completion setup instructions.
+
+    Use this to enable tab-completion for essh.
+
+    Examples:
+
+        essh completions bash   eval in .bashrc
+
+        essh completions zsh   eval in .zshrc
+
+        essh completions fish   source in config.fish
+
+        essh completions powershell   add to $PROFILE
+    """
+    tool: str = ctx.parent.info_name if ctx.parent is not None and ctx.parent.info_name is not None else "essh"
+    click.echo(f"# Enable shell completion for {tool}:")
+    click.echo(f"# Add the following to your shell profile:")
+    click.echo(f"eval $(_{tool.upper()}_COMPLETE={shell}_source {tool})")
+
+
 if __name__ == "__main__":
     main()

@@ -2,7 +2,7 @@
 # PURPOSE: Manage detached background jobs with friendly names, stable UIDs, async launch workers, state refresh, and lightweight update events.
 # OWNS: bg CLI storage, naming, worker launch, process inspection, output capture, wait loops, and record cleanup.
 # EXPORTS: main (CLI entry point), create_job (launch helper), list_jobs (enumeration), load_job_snapshot (lookup), launch helpers, wait helpers
-# DOCS: docs/product.md, docs/arch.md, skills/bg-jobs/SKILL.md, agent_chat/plan_bg_name_redesign_2026-03-27.md, agent_chat/plan_bg_wait_notifications_2026-03-28.md, agent_chat/plan_bg_immediate_fire_and_forget_2026-04-07.md
+# DOCS: docs/product.md, docs/arch.md, skills/bg-jobs/SKILL.md, .agents/reports/plan_bg_name_redesign_2026-03-27.md, .agents/reports/plan_bg_wait_notifications_2026-03-28.md, .agents/reports/plan_bg_immediate_fire_and_forget_2026-04-07.md
 
 """Background job manager CLI."""
 
@@ -2134,6 +2134,30 @@ def prune() -> None:
         click.echo(f"Pruned {removed} job(s)")
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
+
+
+@main.command(hidden=True)
+@click.argument("shell", type=click.Choice(["bash", "zsh", "fish", "powershell"]), default="bash")
+@click.pass_context
+def completions(ctx: click.Context, shell: str) -> None:
+    """Print shell completion setup instructions.
+
+    Use this to enable tab-completion for bg.
+
+    Examples:
+
+        bg completions bash   eval in .bashrc
+
+        bg completions zsh   eval in .zshrc
+
+        bg completions fish   source in config.fish
+
+        bg completions powershell   add to $PROFILE
+    """
+    tool: str = ctx.parent.info_name if ctx.parent is not None and ctx.parent.info_name is not None else "bg"
+    click.echo(f"# Enable shell completion for {tool}:")
+    click.echo(f"# Add the following to your shell profile:")
+    click.echo(f"eval $(_{tool.upper()}_COMPLETE={shell}_source {tool})")
 
 
 if __name__ == "__main__":

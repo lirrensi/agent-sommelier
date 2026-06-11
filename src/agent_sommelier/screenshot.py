@@ -1,5 +1,6 @@
 """Screenshot CLI - uses MSS for Windows (all monitors), native tools elsewhere."""
 
+import json
 import sys
 import platform
 import subprocess
@@ -192,7 +193,8 @@ def auto_name_screenshot() -> Path:
 @click.option("--primary", is_flag=True, help="Capture only the primary monitor")
 @click.option("--clipboard", is_flag=True, help="Copy screenshot to clipboard")
 @click.option("--verbose", is_flag=True, help="Show detailed output")
-def main(output: str | None, all_monitors: bool, primary: bool, clipboard: bool, verbose: bool):
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+def main(output: str | None, all_monitors: bool, primary: bool, clipboard: bool, verbose: bool, json_output: bool):
     """Take a screenshot.
 
     OUTPUT: Optional output file path. If not provided, auto-generates name.
@@ -220,13 +222,19 @@ def main(output: str | None, all_monitors: bool, primary: bool, clipboard: bool,
             click.echo("Warning: Clipboard copy not supported on this platform.", err=True)
 
     if success:
-        click.echo(str(output_path))
+        if json_output:
+            click.echo(json.dumps({"path": str(output_path), "success": True}))
+        else:
+            click.echo(str(output_path))
     else:
-        click.echo("Failed to take screenshot.", err=True)
-        click.echo(
-            "Install with: uv tool install agent-sommelier-cli[screenshot]", err=True
-        )
-        sys.exit(1)
+        if json_output:
+            click.echo(json.dumps({"success": False, "error": "Failed to take screenshot"}), err=True)
+        else:
+            click.echo("Failed to take screenshot.", err=True)
+            click.echo(
+                "Install with: uv tool install agent-sommelier-cli[screenshot]", err=True
+            )
+            sys.exit(1)
 
 
 if __name__ == "__main__":

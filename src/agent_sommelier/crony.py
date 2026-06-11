@@ -766,5 +766,29 @@ def logs(name: str):
         click.echo(f"No logs found for job: {name}")
 
 
+@main.command(hidden=True)
+@click.argument("shell", type=click.Choice(["bash", "zsh", "fish", "powershell"]), default="bash")
+@click.pass_context
+def completions(ctx: click.Context, shell: str) -> None:
+    """Print shell completion setup instructions.
+
+    Use this to enable tab-completion for crony.
+
+    Examples:
+
+        crony completions bash   eval in .bashrc
+
+        crony completions zsh   eval in .zshrc
+
+        crony completions fish   source in config.fish
+
+        crony completions powershell   add to $PROFILE
+    """
+    tool: str = ctx.parent.info_name if ctx.parent is not None and ctx.parent.info_name is not None else "crony"
+    click.echo(f"# Enable shell completion for {tool}:")
+    click.echo(f"# Add the following to your shell profile:")
+    click.echo(f"eval $(_{tool.upper()}_COMPLETE={shell}_source {tool})")
+
+
 if __name__ == "__main__":
     main()

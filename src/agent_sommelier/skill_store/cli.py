@@ -1182,6 +1182,35 @@ def cmd_help(ctx: click.Context, command: str | None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# COMMAND: completions
+# ---------------------------------------------------------------------------
+
+
+@click.command(hidden=True)
+@click.argument("shell", type=click.Choice(["bash", "zsh", "fish", "powershell"]), default="bash")
+@click.pass_context
+def cmd_completions(ctx: click.Context, shell: str) -> None:
+    """Print shell completion setup instructions.
+
+    Use this to enable tab-completion for skill-store.
+
+    Examples:
+
+        skill-store completions bash   eval in .bashrc
+
+        skill-store completions zsh   eval in .zshrc
+
+        skill-store completions fish   source in config.fish
+
+        skill-store completions powershell   add to $PROFILE
+    """
+    tool: str = ctx.parent.info_name if ctx.parent is not None and ctx.parent.info_name is not None else "skill-store"
+    click.echo(f"# Enable shell completion for {tool}:")
+    click.echo(f"# Add the following to your shell profile:")
+    click.echo(f"eval $(_{tool.upper()}_COMPLETE={shell}_source {tool})")
+
+
+# ---------------------------------------------------------------------------
 # CLI Entry Point
 # ---------------------------------------------------------------------------
 
@@ -1223,6 +1252,7 @@ cli.add_command(cmd_groups, "groups")
 cli.add_command(cmd_status, "status")
 cli.add_command(cmd_version, "version")
 cli.add_command(cmd_help, "help")
+cli.add_command(cmd_completions, "completions")
 
 
 def main() -> None:

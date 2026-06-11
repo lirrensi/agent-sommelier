@@ -223,7 +223,8 @@ def _install_linux() -> None:
 @cli.command()
 @click.argument("name")
 @click.argument("cmd", required=False)
-def create(name: str, cmd: str | None) -> None:
+@click.option("--json/--no-json", "json_output", is_flag=True, default=False, help="Output as JSON.")
+def create(name: str, cmd: str | None, json_output: bool) -> None:
     """Create a new detached session.
 
     NAME is the session name. CMD is an optional initial command
@@ -239,16 +240,23 @@ def create(name: str, cmd: str | None) -> None:
         _tmux("send-keys", "-t", name, "-l", "--", cmd)
         _tmux("send-keys", "-t", name, "Enter")
 
-    click.echo(f"Created session: {name}", err=True)
+    if json_output:
+        click.echo(json.dumps({"session": name, "created": True}))
+    else:
+        click.echo(f"Created session: {name}", err=True)
 
 
 @cli.command()
 @click.argument("name")
-def rm(name: str) -> None:
+@click.option("--json/--no-json", "json_output", is_flag=True, default=False, help="Output as JSON.")
+def rm(name: str, json_output: bool) -> None:
     """Kill a session."""
     _ensure_session(name)
     _tmux("kill-session", "-t", name)
-    click.echo(f"Killed session: {name}", err=True)
+    if json_output:
+        click.echo(json.dumps({"session": name, "killed": True}))
+    else:
+        click.echo(f"Killed session: {name}", err=True)
 
 
 @cli.command("sk")
@@ -267,14 +275,18 @@ def sk(name: str, cmd: str) -> None:
 
 @cli.command("r")
 @click.argument("name")
-def r(name: str) -> None:
+@click.option("--json/--no-json", "json_output", is_flag=True, default=False, help="Output as JSON.")
+def r(name: str, json_output: bool) -> None:
     """Read session output (full scrollback).
 
     Captures the entire scrollback buffer and prints to stdout.
     """
     _ensure_session(name)
     result = _tmux("capture-pane", "-p", "-J", "-t", name, "-S", "-50000")
-    sys.stdout.write(result.stdout)
+    if json_output:
+        click.echo(json.dumps({"session": name, "output": result.stdout}))
+    else:
+        sys.stdout.write(result.stdout)
 
 
 @cli.command()
@@ -288,7 +300,8 @@ def r(name: str) -> None:
     show_default=True,
     help="Seconds to wait after sending before reading output.",
 )
-def run(name: str, cmd: str, timeout: int) -> None:
+@click.option("--json/--no-json", "json_output", is_flag=True, default=False, help="Output as JSON.")
+def run(name: str, cmd: str, timeout: int, json_output: bool) -> None:
     """Send keys, wait, and read output.
 
     Sends CMD to the session, waits TIMEOUT seconds (default 5),
@@ -300,7 +313,10 @@ def run(name: str, cmd: str, timeout: int) -> None:
     _tmux("send-keys", "-t", name, "Enter")
     time.sleep(timeout)
     result = _tmux("capture-pane", "-p", "-J", "-t", name, "-S", "-50000")
-    sys.stdout.write(result.stdout)
+    if json_output:
+        click.echo(json.dumps({"session": name, "output": result.stdout}))
+    else:
+        sys.stdout.write(result.stdout)
 
 
 @cli.command("list")
@@ -578,6 +594,30 @@ def manager() -> None:
 
 
 # ─── entry point ─────────────────────────────────────────────────────────────
+
+@cli.command(hidden=True)
+@click.argument("shell", type=click.Choice(["bash", "zsh", "fish", "powershell"]), default="bash")
+@click.pass_context
+def completions(ctx: click.Context, shell: str) -> None:
+    """Print shell completion setup instructions.
+
+    Use this to enable tab-completion for tmx.
+
+    Examples:
+
+        tmx completions bash   eval in .bashrc
+
+        tmx completions zsh   eval in .zshrc
+
+        tmx completions fish   source in config.fish
+
+        tmx completions powershell   add to $PROFILE
+    """
+    tool: str = ctx.parent.info_name if ctx.parent is not None and ctx.parent.info_name is not None else "tmx"
+    click.echo(f"# Enable shell completion for {tool}:")
+    click.echo(f"# Add the following to your shell profile:")
+    click.echo(f"eval $(_{tool.upper()}_COMPLETE={shell}_source {tool})")
+
 
 if __name__ == "__main__":
     cli()

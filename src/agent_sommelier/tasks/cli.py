@@ -879,5 +879,29 @@ def serve(port: int, no_browser: bool) -> None:
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
 
 
+@main.command(hidden=True)
+@click.argument("shell", type=click.Choice(["bash", "zsh", "fish", "powershell"]), default="bash")
+@click.pass_context
+def completions(ctx: click.Context, shell: str) -> None:
+    """Print shell completion setup instructions.
+
+    Use this to enable tab-completion for tasks.
+
+    Examples:
+
+        tasks completions bash   eval in .bashrc
+
+        tasks completions zsh   eval in .zshrc
+
+        tasks completions fish   source in config.fish
+
+        tasks completions powershell   add to $PROFILE
+    """
+    tool: str = ctx.parent.info_name if ctx.parent is not None and ctx.parent.info_name is not None else "tasks"
+    click.echo(f"# Enable shell completion for {tool}:")
+    click.echo(f"# Add the following to your shell profile:")
+    click.echo(f"eval $(_{tool.upper()}_COMPLETE={shell}_source {tool})")
+
+
 if __name__ == "__main__":
     main()

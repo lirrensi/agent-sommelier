@@ -6,6 +6,7 @@ Usage:
     some-command | notify "Title" -
 """
 
+import json
 import sys
 import platform
 import subprocess
@@ -76,8 +77,9 @@ def send_notification(title: str, body: str, urgency: str | None = None, expire_
 @click.option("--quiet", "-q", is_flag=True, help="Silent mode — no output on success")
 @click.option("--urgency", type=click.Choice(["low", "normal", "critical"]), default=None, help="Notification urgency (Linux only)")
 @click.option("--expire-time", type=int, default=None, help="Time in milliseconds before notification expires (Linux only)")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 def main(title: str, body: str | None, sound: bool, quiet: bool,
-         urgency: str | None, expire_time: int | None):
+         urgency: str | None, expire_time: int | None, json_output: bool):
     """Send a desktop notification.
 
     TITLE: Notification title
@@ -102,9 +104,13 @@ def main(title: str, body: str | None, sound: bool, quiet: bool,
 
     success = send_notification(title, body, urgency=urgency, expire_time=expire_time)
     if success:
-        if not quiet:
+        if json_output:
+            click.echo(json.dumps({"success": True}))
+        elif not quiet:
             click.echo("Notification sent.", err=True)
     else:
+        if json_output:
+            click.echo(json.dumps({"success": False}), err=True)
         sys.exit(1)
 
 

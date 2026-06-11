@@ -289,7 +289,7 @@ def _indicator(msg: str) -> None:
 # ─── response handlers ──────────────────────────────────────────────────────
 
 
-def _handle_streaming_response(response) -> str:
+def _handle_streaming_response(response, json_output: bool = False) -> str:
     """Process an SSE stream, printing tokens as they arrive.
 
     **TTY mode:** Shows ``Thinking...`` indicator, clears on first token.
@@ -298,9 +298,12 @@ def _handle_streaming_response(response) -> str:
     **Non-TTY mode:** Emits only the answer content — no indicators,
     no reasoning, no ANSI styling.  Still streams token by token.
 
+    **JSON mode (json_output=True):** Emits one JSON line per content
+    chunk: ``{"role": "assistant", "content": "<chunk>"}``.
+
     Returns the full accumulated content string.
     """
-    tty = _is_tty()
+    tty = _is_tty() and not json_output
     content_text = ""
     saw_reasoning = False
     saw_any_output = False
@@ -325,11 +328,11 @@ def _handle_streaming_response(response) -> str:
 
             delta = choices[0].get("delta", {})
 
-            # Reasoning from thinking models
+            # Reasoning from thinking models (skipped in JSON mode)
             reasoning_chunk = (
                 delta.get("reasoning") or delta.get("reasoning_content") or ""
             )
-            if reasoning_chunk:
+            if reasoning_chunk and not json_output:
                 if tty:
                     if not saw_any_output:
                         saw_any_output = True
@@ -345,17 +348,24 @@ def _handle_streaming_response(response) -> str:
             # Normal content
             content_chunk = delta.get("content") or ""
             if content_chunk:
-                if tty:
-                    if not saw_any_output:
-                        saw_any_output = True
-                        _clear_line()
-                    # Insert newline before first content token after reasoning
-                    if saw_reasoning and not content_text:
-                        sys.stdout.write("\n")
-                        sys.stdout.flush()
-                content_text += content_chunk
-                sys.stdout.write(content_chunk)
-                sys.stdout.flush()
+                if json_output:
+                    content_text += content_chunk
+                    sys.stdout.write(
+                        json.dumps({"role": "assistant", "content": content_chunk}) + "\n"
+                    )
+                    sys.stdout.flush()
+                else:
+                    if tty:
+                        if not saw_any_output:
+                            saw_any_output = True
+                            _clear_line()
+                        # Insert newline before first content token after reasoning
+                        if saw_reasoning and not content_text:
+                            sys.stdout.write("\n")
+                            sys.stdout.flush()
+                    content_text += content_chunk
+                    sys.stdout.write(content_chunk)
+                    sys.stdout.flush()
 
     except json.JSONDecodeError:
         # Skip any malformed SSE lines gracefully
@@ -364,21 +374,25 @@ def _handle_streaming_response(response) -> str:
     if tty and not saw_any_output:
         _clear_line()
 
-    sys.stdout.write("\n")
-    sys.stdout.flush()
+    if not json_output:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
 
     return content_text
 
 
-def _handle_non_streaming_response(response) -> str:
+def _handle_non_streaming_response(response, json_output: bool = False) -> str:
     """Process a complete (non-streaming) JSON response.
 
     **TTY mode:** Shows ``Thinking...`` indicator, clears when data arrives.
     Reasoning in *dim yellow*, answer rendered with ``rich.markdown.Markdown``.
 
     **Non-TTY mode:** Emits only the answer content as plain text.
+
+    **JSON mode (json_output=True):** Emits a single JSON line:
+    ``{"role": "assistant", "content": "<full text>"}``.
     """
-    tty = _is_tty()
+    tty = _is_tty() and not json_output
 
     if tty:
         _indicator("Thinking...")
@@ -402,7 +416,7 @@ def _handle_non_streaming_response(response) -> str:
 
     message = choices[0].get("message", {})
 
-    # Reasoning (TTY only)
+    # Reasoning (TTY only, skipped in JSON mode)
     reasoning = (
         message.get("reasoning")
         or message.get("reasoning_content")
@@ -416,7 +430,10 @@ def _handle_non_streaming_response(response) -> str:
 
     # Content
     content = message.get("content", "")
-    if content:
+    if json_output:
+        sys.stdout.write(json.dumps({"role": "assistant", "content": content}) + "\n")
+        sys.stdout.flush()
+    elif content:
         if tty:
             md = rich.markdown.Markdown(content)
             Console().print(md)
@@ -594,12 +611,20 @@ def _read_config_raw() -> dict:
     show_default=True,
     help="Timeout in seconds for the HTTP request.",
 )
+@click.option(
+    "--json",
+    "json_output",
+    is_flag=True,
+    default=False,
+    help="Output each response as a JSON object instead of plain text.",
+)
 def ask(
     question: str,
     system: str,
     model: str | None,
     no_stream: bool,
     timeout: int,
+    json_output: bool,
 ) -> None:
     """Ask QUESTION to the configured LLM and stream the answer."""
     config = load_config()
@@ -624,7 +649,7 @@ def ask(
 
     body_bytes = json.dumps(body).encode("utf-8")
 
-    if _is_tty():
+    if not json_output and _is_tty():
         _indicator("Requesting...")
 
     response = _make_request(
@@ -634,13 +659,37 @@ def ask(
         timeout,
     )
 
-    if _is_tty():
+    if not json_output and _is_tty():
         _clear_line()
 
     if no_stream:
-        _handle_non_streaming_response(response)
+        _handle_non_streaming_response(response, json_output=json_output)
     else:
-        _handle_streaming_response(response)
+        _handle_streaming_response(response, json_output=json_output)
+
+
+@main.command(hidden=True)
+@click.argument("shell", type=click.Choice(["bash", "zsh", "fish", "powershell"]), default="bash")
+@click.pass_context
+def completions(ctx: click.Context, shell: str) -> None:
+    """Print shell completion setup instructions.
+
+    Use this to enable tab-completion for amun.
+
+    Examples:
+
+        amun completions bash   eval in .bashrc
+
+        amun completions zsh   eval in .zshrc
+
+        amun completions fish   source in config.fish
+
+        amun completions powershell   add to $PROFILE
+    """
+    tool: str = ctx.parent.info_name if ctx.parent is not None and ctx.parent.info_name is not None else "amun"
+    click.echo(f"# Enable shell completion for {tool}:")
+    click.echo(f"# Add the following to your shell profile:")
+    click.echo(f"eval $(_{tool.upper()}_COMPLETE={shell}_source {tool})")
 
 
 if __name__ == "__main__":
