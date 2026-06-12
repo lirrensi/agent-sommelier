@@ -305,9 +305,8 @@ List all cron jobs.
 - Job objects include computed next-run data when derivable
 
 **Behavior:**
-- Auto-syncs with OS scheduler on every call (reconciles jobs.json with crontab/Task Scheduler)
-- Finds orphaned tasks in OS and adds to index
-- Re-registers jobs missing from OS
+- Reads jobs directly from jobs.json (managed by the scheduler daemon)
+- Use `--sync` to import orphaned crontab/schtasks entries from prior versions
 - Calculates the next upcoming execution time for recurring jobs before rendering list output
 - One-off jobs use their stored scheduled timestamp as `next_run`
 
@@ -351,23 +350,31 @@ View job logs.
 
 ### OS Integration
 
-| Platform | Scheduler | Marker |
-|----------|-----------|--------|
-| Linux | crontab | `# CRONY:{name}` |
-| macOS | crontab | `# CRONY:{name}` |
-| Windows | Task Scheduler | `CRONY_{name}` |
+| Platform | Scheduler | Details |
+|----------|-----------|---------|
+| All | crony daemon | Cross-platform Python daemon using croniter; auto-starts on first `crony add` |
+
+### Daemon Commands
+
+| Command | Description |
+|---------|-------------|
+| `crony daemon status` | Show daemon status (running/stopped/stale) |
+| `crony daemon start` | Start the daemon and register auto-start on login |
+| `crony daemon stop` | Stop the daemon |
+| `crony daemon restart` | Stop and restart the daemon |
+
+The daemon auto-starts when the first job is added (`crony add ...`) and auto-exits when no jobs remain. Manual control is available via the commands above.
 
 ### Edge Cases
 
 - Job name already exists: error, must remove first
 - Invalid schedule: error with message
 - Missing optional dependencies: error with install hint
-- OS scheduler unavailable: error, but job saved to index
-- One-off jobs: stored in index but not added to recurring scheduler
-- **Working directory:** When a job is added, crony captures the current working directory.
-  When the OS scheduler runs the job, it first `cd`s to that directory, so relative paths work.
-  On Unix, this uses `shlex.quote()` for safe path handling. On Windows, a `.bat` wrapper script
-  is created in `~/.crony/scripts/` with proper quoting.
+- **Daemon auto-start:** After `crony add`, the daemon starts automatically. On next login it restarts automatically if jobs exist.
+- **Daemon auto-exit:** When all jobs are removed (`crony rm` for the last job), the daemon stops silently.
+- **Stale daemon:** `crony daemon status` detects crashed/zombie daemons via lockfile+token verification (not PID alone).
+- One-off jobs: executed by daemon and marked completed automatically
+- **Working directory:** When a job is added, crony captures the current working directory. The daemon runs the command from that directory via `cwd` in `subprocess.Popen`.
 
 ---
 
@@ -1039,7 +1046,7 @@ All tools follow this convention:
 
 ## Design Principles
 
-1. **No daemon** — All tools are stateless CLI invocations
+1. **Minimal state** — All tools are CLI invocations; crony uses a lightweight user-daemon for scheduling
 2. **No database** — JSON files for persistence
 3. **No configuration** — Sensible defaults, auto-detection
 4. **Pipe-friendly** — All tools accept stdin where appropriate

@@ -12,7 +12,7 @@ agent-sommelier/
 │   ├── __init__.py          # Package init, version
 │   ├── notify.py            # Desktop notifications
 │   ├── bg.py                # Background job manager
-│   ├── crony.py             # Cron job scheduler
+│   ├── crony/               # Cron job scheduler (package)
 │   ├── screenshot.py        # Screen capture
 │   ├── essh.py              # Portable SSH wrapper
 │   ├── skill_store/          # Skill registry (CLI + MCP)
@@ -273,12 +273,15 @@ For output-match waits, the implementation SHOULD scan stdout/stderr incremental
 
 ## Component: crony
 
-### File
-`src/agent_sommelier/crony.py`
+### Files
+`src/agent_sommelier/crony/` (package)
+- `cli.py` — Click CLI entry point and schedule parsing
+- `daemon.py` — Cross-platform scheduler daemon (pure logic, no Click/Rich)
+- `__init__.py` — Package marker
 
 ### Entry Point
 ```python
-crony = "agent_sommelier.crony:main"
+crony = "agent_sommelier.crony.cli:main"
 ```
 
 ### Commands
@@ -301,10 +304,10 @@ For display and automation, list responses MUST enrich each job with a `next_run
 ```
 ~/.crony/
 ├── jobs.json       # {"job_name": {...}}
+├── daemon.lock     # {"pid": N, "started_at": "iso8601", "token": "hex"}
 ├── logs/
-│   └── {name}.log
-└── scripts/        # Windows .bat wrappers for CWD preservation
-    └── {name}.bat
+│   └── {name}.log  # Captured stdout/stderr with header/footer
+└── jobs.json.tmp   # Temporary file for atomic writes
 ```
 
 ### Schedule Parsing
@@ -341,66 +344,94 @@ When `--cron` is passed on the CLI, `add_job()` bypasses `parse_schedule()` enti
 | `weekday` | `0 0 * * 1-5` |
 | `weekend` | `0 0 * * 0,6` |
 
-### OS Integration
+### Scheduler Daemon
 
-**Linux/macOS (crontab):**
-```
-register_job_crontab(job)
-    |
-    +-- if cwd present: cmd = f"cd {shlex.quote(cwd)} && {cmd}"
-    |
-    +-- subprocess.run(["crontab", "-l"]) --> current crontab
-    |
-    +-- remove lines containing "CRONY:{name}"
-    |
-    +-- append "{cron_expr} {wrapped_cmd}  # CRONY:{name}"
-    |
-    +-- subprocess.run(["crontab", "-"], input=new_cron)
-```
+The crony daemon is a cross-platform Python process that replaces all OS-level scheduling (crontab, schtasks). It uses `croniter` to calculate exact next-run times and spawns jobs with full log capture.
 
-**Windows (Task Scheduler):**
+**Key properties:**
+- Auto-starts on first `crony add` — no manual "install daemon" step
+- Auto-exits when no jobs remain in `jobs.json`
+- Registers itself for login auto-start without admin privileges
+- Lockfile with token-based PID verification prevents stale-PID races
+
+#### Lockfile
+
 ```
-register_job_task_scheduler(job)
-    |
-    +-- if cwd present:
-    |       |
-    |       +-- write ~/.crony/scripts/{name}.bat (cd /d "CWD" && CMD)
-    |       +-- cmd = str(bat_path)
-    |
-    +-- schtasks /Delete /TN CRONY_{name} /F  # Remove existing
-    |
-    +-- if recurring:
-    |       |
-    |       +-- schtasks /Create /TN CRONY_{name} /TR {cmd} /SC DAILY ...
-    |
-    +-- else (one-off):
-            |
-            +-- schtasks /Create /TN CRONY_{name} /TR {cmd} /SC ONCE /ST {time} /SD {date}
+~/.crony/daemon.lock   → {"pid": 1234, "started_at": "2026-06-12T10:00:00+00:00", "token": "hex"}
 ```
 
-When jobs are removed via `unregister_job()`, the `.bat` wrapper at `~/.crony/scripts/{name}.bat` is also deleted on Windows.
+`is_daemon_alive()` validates three conditions via `psutil`:
+1. PID from lockfile is a running process
+2. Process name contains "crony" or "python"
+3. Token from lockfile appears in the process command line
 
-### Sync Mechanism
+If any check fails the lockfile is removed and `is_daemon_alive()` returns `False`.
+
+#### Auto-Start Registration
+
+| Platform | Mechanism |
+|----------|-----------|
+| Windows | `schtasks /Create /TN CRONY_DAEMON /TR "crony daemon run-loop" /SC ONLOGON /F` |
+| Linux | `~/.config/systemd/user/crony-daemon.service` (Type=simple, Restart=on-failure) |
+| macOS | `~/Library/LaunchAgents/com.crony.daemon.plist` (RunAtLoad + KeepAlive) |
+
+`start_daemon()` registers on first launch; `stop_daemon()` unregisters.
+
+#### Scheduler Loop
+
+```
+run_daemon_loop(token):
+    while True:
+        jobs = load_jobs()
+        if not jobs: break
+        now = datetime.now()
+        due = [j for j in jobs if croniter.get_next(j) <= now]
+        for job in due:
+            spawn_job(job)
+            if job.type == "once": mark_completed(job)
+        save_jobs(jobs)
+        sleep_seconds = min(earliest_next - now, 60)
+        sleep(sleep_seconds)
+```
+
+Sleep is capped at 60 seconds so freshly-added jobs are picked up promptly. On wake, `jobs.json` is reloaded from disk to pick up changes from `crony add`/`crony rm`.
+
+#### Job Spawning
+
+`spawn_job(job)` uses `subprocess.Popen` with:
+- `cwd=job["cwd"]` — preserves the working directory at `add` time
+- `shell=True`
+- Windows: `creationflags=subprocess.CREATE_NEW_PROCESS_GROUP` (detached)
+- Unix: `start_new_session=True` (detached)
+- stdout/stderr piped to `~/.crony/logs/{name}.log` (append mode)
+- Header: `--- crony run: {timestamp} (PID {pid}) ---`
+- Footer: `--- exit: {code} at {timestamp} ---`
+
+#### OS Scheduler Stubs
+
+`register_job()`, `register_job_crontab()`, and `register_job_at()` are no-ops — the daemon reads `jobs.json` directly and is the sole executor on all platforms.
+
+`unregister_job()` still cleans up legacy crontab/schtasks entries (best-effort) for migration.
+
+#### Migration (`crony list --sync`)
 
 ```
 sync_jobs() -> dict
     |
     +-- load_jobs() --> stored jobs
     |
-    +-- scan_os_scheduler() --> OS jobs with CRONY markers
+    +-- scan_os_scheduler() --> legacy OS jobs with CRONY markers
     |
     +-- for each OS job not in stored:
     |       |
     |       +-- add to stored (recovery)
     |
-    +-- for each stored job not in OS:
-    |       |
-    |       +-- re-register with OS
-    |
     +-- save_jobs(stored)
     |
     +-- return stored
 ```
+
+`scan_os_scheduler()` still detects legacy crontab `# CRONY:name` markers and Windows `schtasks CRONY_name` tasks so they can be imported into daemon-managed `jobs.json`. No new OS registrations are created.
 
 ### List Rendering
 
