@@ -418,6 +418,250 @@ Take a screenshot.
 
 ---
 
+## Tool: artify — HTML Artifact Preview
+
+Open, live-reload, manage, and snapshot HTML artifacts produced by the `artify` skill. Six commands: a simple offline opener, a local HTTP server with polling-based live-reload, a process list, a kill-by-port, a restart-by-port, and a form-state snapshot reader that talks to the page via a small command/response protocol.
+
+### Commands
+
+#### `artify open FILE`
+
+Open FILE in the default browser via a `file://` URL. Offline, no server, no live-reload.
+
+**Arguments:**
+- `FILE` — Path to the HTML file. Must exist and not be a directory.
+
+**Behavior:**
+- Resolves FILE to an absolute path and opens it in the default browser as a new tab
+- No HTTP server, no injection, no reload
+- Use this when the file is finished and you just want to view it
+
+**Exit codes:**
+- `0` — Browser launched (or already open)
+- `1` — Browser failed to launch
+
+#### `artify serve FILE [--webview]`
+
+Serve FILE on a random local port with polling-based live-reload, then open the served URL in a browser tab (or in a chromeless app-mode window with `--webview`).
+
+**Arguments:**
+- `FILE` — Path to the HTML file. Must exist and not be a directory.
+
+**Options:**
+- `--webview` — Open the served page in a chromeless native window using the host browser's `--app=URL` mode (no tabs, no address bar, no menu)
+
+**Behavior:**
+- Binds an HTTP server to `127.0.0.1` on a random free port
+- Registers the running instance under `~/.artify/instances/<port>.json` so `artify list`, `artify kill`, and `artify restart` can find it later
+- Injects a small live-reload script into the served HTML (skipped for non-`.html`/`.htm` files)
+- The client polls `/__reload_check` every 500ms; when the file's mtime changes, the page reloads
+- The same client polls `/__commands` every 500ms so the CLI can ask the page to perform actions (currently: `snapshot`)
+- A `watchdog` observer runs in the background and coalesces filesystem-event bursts with a 150ms throttle (handles editor save patterns that write to a temp file then rename)
+- Edit the file in any editor; the tab reloads within ~1 second of save
+- `Ctrl+C` cleanly stops the server, removes the registry entry, and the watchdog observer
+
+**App-mode browser detection (best-effort):**
+
+| Platform | Primary | Fallback |
+|----------|---------|----------|
+| Windows | `msedge.exe --app=URL` | `chrome.exe --app=URL` |
+| macOS | `open -na "Google Chrome" --args --app=URL` (only if Chrome is installed) | — |
+| Linux | `google-chrome --app=URL` | `chromium`, `chromium-browser` |
+
+If no app-mode browser is found, `artify serve --webview` falls back to the default browser tab and prints a one-line warning to stderr. It does not error.
+
+**Exit codes:**
+- `0` — Server stopped cleanly (Ctrl+C or normal exit)
+- `1` — Failed to start server or read file
+
+#### `artify list`
+
+List every artify `serve` instance currently registered on this machine, with live liveness detection.
+
+**Behavior:**
+- Reads `~/.artify/instances/*.json` (one file per running `serve` instance, named after its port)
+- Augments each entry with a live `alive` flag (computed via `psutil.pid_exists` on the stored PID)
+- Renders a Rich table with columns: PORT, PID, FILE, STATUS, STARTED, URL
+  - `STATUS` is `running` if the PID is alive, `dead` otherwise
+  - `URL` is `http://127.0.0.1:<port>/` for running entries, `-` for dead ones
+  - `FILE` is truncated to the last 60 characters with a leading `...` for long Windows paths
+- Stale (dead) entries are kept so the user can see and decide what to do with them; the CLI never auto-removes them
+- Exits 0 even when there are no entries; prints `No artify instances running.` to stdout
+
+**Exit codes:**
+- `0` — Always (the command is a read-only view)
+
+#### `artify kill PORT`
+
+Terminate the `serve` instance bound to PORT and clean up its registry entry.
+
+**Arguments:**
+- `PORT` — TCP port number (1..65535). Must match a registered instance.
+
+**Behavior:**
+- Reads the registry entry for PORT; if missing, prints an error to stderr and exits 1
+- Probes liveness via `psutil.pid_exists`; if alive, sends `SIGTERM` (via `psutil.Process.terminate`) and waits up to 2 seconds, escalating to `SIGKILL` (`psutil.Process.kill`) if the process is still alive
+- Removes the registry entry for PORT regardless of whether the process was alive (a dead entry is still cleaned up)
+- Success message: `Killed artify instance on port <PORT> (pid <PID>)`
+- If the PID was already dead, prints `Instance on port <PORT> (pid <PID>) was already not running; cleaned up registry.` (still exit 0 — cleanup is the user-visible operation)
+- If the OS refuses the kill (e.g. process owned by another user), prints `Access denied killing pid <PID>: <reason>` to stderr and exits 1
+
+**Exit codes:**
+- `0` — Process terminated (or was already dead) and registry entry removed
+- `1` — No instance on PORT, or `psutil.AccessDenied` from the OS
+
+#### `artify restart PORT`
+
+Kill the instance on PORT (if alive) and re-serve the same file on a new, free port.
+
+**Arguments:**
+- `PORT` — TCP port number (1..65535). Must match a registered instance.
+
+**Behavior:**
+- Reads the registry entry for PORT; if missing, prints an error to stderr and exits 1
+- If the registry entry's `file` field is empty or the file no longer exists on disk, prints an error to stderr and exits 1 (no kill happens)
+- Best-effort kill of the old PID (`SIGTERM` → 2s grace → `SIGKILL`); any `psutil` failure is swallowed silently
+- Removes the old registry entry so no stale entry points at a now-dead port
+- Spawns a fresh, fully-detached `artify serve <FILE>` subprocess:
+  - **Windows:** `creationflags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` so the new process survives this CLI's exit and has no shared console
+  - **Unix:** `start_new_session=True` plus `stdin/stdout/stderr=DEVNULL`
+- Sleeps 300ms after spawn to give the new instance a beat to bind its port and write its own registry entry
+- Prints `Restarted. New instance on a different port — run 'artify list' to find it.`
+- The new instance picks its own port (the kernel assigns a free one); the caller should run `artify list` afterwards to find it
+
+**Exit codes:**
+- `0` — Old instance was killed, new instance was spawned (caller should verify with `artify list`)
+- `1` — No instance on PORT, missing file path, or file no longer exists
+
+#### `artify snapshot PORT [--timeout N]`
+
+Ask the running `serve` instance on PORT to read the page's current form state and print it as JSON to stdout. The page is asked via a command/response protocol — the server enqueues a `snapshot` command that the page picks up on its next 500ms `/__commands` poll.
+
+**Arguments:**
+- `PORT` — TCP port number (1..65535). Must be a live, responding `serve` instance.
+
+**Options:**
+- `--timeout` — Seconds to wait for the page to respond before giving up (default: 30, minimum: 1.0). The server enforces its own internal timeout (`InstanceState.snapshot_timeout`, default 30s) which is independent of this value; the CLI uses `timeout + 5s` as its socket read timeout so a server-side 408 has time to come back.
+
+**Behavior:**
+- Sends `POST http://127.0.0.1:<port>/__snapshot_request` with an empty body
+- The server allocates a snapshot id, enqueues a `{"type": "snapshot", "id": <sid>}` command, and blocks the request thread waiting for the page to POST back to `/__snapshot_result/<sid>`
+- The page's polling JS picks up the command, collects the current form field values (or, if the page defined `window.__artify_collect__`, calls that function and uses its return value), and POSTs `{"fields": {...}}` to `/__snapshot_result/<sid>`
+- The server signals the blocked request thread and returns the payload as `{"fields": {...}}` with status 200
+- The CLI pretty-prints the JSON to stdout
+- On a 408 from the server (page never responded within the server's internal timeout), prints `Page did not respond within <timeout>s` to stderr and exits 1
+- On a connection refused / unreachable port, prints `No artify instance on port <port>` to stderr and exits 1
+- If the instance exists but returns a non-200/non-408, prints `HTTP <code> from artify on port <port>: <reason>` and exits 1
+- Empty `fields` is a valid, expected result for pages with no inputs (e.g. a landing page) — exits 0 and prints `{"fields": {}}`
+
+**Exit codes:**
+- `0` — Page responded; JSON was printed to stdout
+- `1` — No instance, page did not respond, or server returned a non-success status
+
+### Instance Registry
+
+Every running `serve` instance is recorded as a small JSON file under `~/.artify/instances/`, one file per port. The file is named after the port: `<port>.json`.
+
+**File format:**
+
+```json
+{
+  "port": 54321,
+  "pid": 12345,
+  "file": "/abs/path/to/index.html",
+  "started_at": "2026-06-20T15:30:00+00:00"
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `port` | int | TCP port the server is bound to |
+| `pid` | int | OS PID of the `serve` process |
+| `file` | str | Absolute path of the file being served |
+| `started_at` | str | ISO 8601 UTC timestamp written by the instance at startup |
+
+**Atomic writes:** The file is written via `<port>.json.tmp` then `os.replace` so a concurrent reader (e.g. `artify list` running at the same moment) never observes a half-written file. Best-effort: any `OSError` is swallowed silently because the registry is observability, not correctness.
+
+**Liveness detection:** `artify list` augments each entry with an `alive` boolean by calling `psutil.pid_exists(pid)`. Stale entries are kept (not auto-removed) so the user can see and decide what to do with them — usually a manual `artify kill <port>`.
+
+**Cleanup:** A `serve` instance removes its own registry entry on `Ctrl+C` (from inside the `finally` block). `artify kill` removes the entry after terminating the process. `artify restart` removes the old entry after killing the old process and before spawning the new one.
+
+### Snapshot Mechanism
+
+`artify snapshot` and the `__snapshot_request` / `__snapshot_result/<id>` endpoints form a small command/response protocol on top of the existing `/__commands` polling loop that the injected reload script already runs.
+
+```
+   CLI                                    server (artify serve)                    page
+    |                                            |                                  |
+    |  POST /__snapshot_request                  |                                  |
+    |-------------------------------------------->|                                  |
+    |  200 OK  (blocks in handler thread)         |                                  |
+    |  body = {"fields": {...}}                   |                                  |
+    |                                            |-- enqueue {"type":"snapshot"} -->|
+    |                                            |   (page polls /__commands)       |
+    |                                            |                                  |
+    |                                            |   GET /__commands                |
+    |                                            |<---------------------------------|
+    |                                            |   [snapshot, snapshot, ...]      |
+    |                                            |--------------------------------->|
+    |                                            |                                  |
+    |                                            |   POST /__snapshot_result/<id>   |
+    |                                            |   {"fields": {...}}              |
+    |                                            |<---------------------------------|
+    |                                            |                                  |
+    |  200 OK with payload                        |   (handler unblocks, returns)   |
+    |<--------------------------------------------|                                  |
+```
+
+**Server-side details:**
+
+- Each `__snapshot_request` allocates a fresh `uuid.uuid4().hex` and registers a `(event, result)` slot in `InstanceState.pending_snapshots` / `snapshot_results` (both protected by `results_lock`)
+- The handler then calls `wait_for_snapshot(sid, timeout=InstanceState.snapshot_timeout)` which blocks on the slot's `threading.Event`
+- The page's `POST /__snapshot_result/<sid>` validates the JSON, calls `set_snapshot_result(sid, payload)`, which stores the payload and `event.set()`s the waiter
+- The handler reads the result, removes the slot, and returns the payload to the CLI
+- On timeout, the handler returns 408 with `{"error": "page did not respond"}` and the slot is dropped so a late page response does not accumulate
+- Unknown snapshot ids at the result endpoint return 404 with `{"error": "unknown snapshot id"}`; malformed JSON returns 400 with `{"error": "invalid json body"}`
+
+**Page-side details:**
+
+- The injected JS polls `/__commands` every 500ms; for each command of `type == "snapshot"`, it collects the current form field values and POSTs them to `/__snapshot_result/<id>`
+- The default collector scans `input`, `textarea`, and `select` elements and produces a flat dict of `name → value` (with `checkbox` → bool, multi-select → list)
+- A page can override the default by defining `window.__artify_collect__ = function() { return {...}; }`; the JS will call it instead and POST its return value
+
+### Live-Reload Mechanism
+
+1. Server binds to `127.0.0.1` on a random port
+2. On `GET /`, server reads the file from disk, injects `<!--ARTIFY_RELOAD--><script src="/__reload.js"></script>` (idempotent — skips if marker is present), and returns `text/html`
+3. The injected script polls `/__reload_check` every 500ms; the endpoint returns the file's current mtime as a text/plain float
+4. When the mtime changes between polls, the page calls `location.reload()`
+5. A `watchdog.observers.Observer` watches the file's parent directory; `on_modified` events update the in-memory mtime cache, with a 150ms throttle to ignore editor bursts (temp file + rename)
+6. The handler also re-reads the file's mtime on every poll request, so missed watchdog events don't cause stale views
+
+### Edge Cases
+
+- Missing file: Click rejects before the command runs; exit code 2 (usage error) with a clear "File ... does not exist" message
+- Path is a directory: Click rejects (the argument type is `dir_okay=False`); exit code 2
+- Non-HTML file (e.g. `.svg`): served as `text/html` with no script injection; the browser attempts to render it natively; reload still works
+- No app-mode browser on `--webview`: prints warning to stderr, falls back to default browser tab
+- File saved with editor burst pattern (temp file + rename): the 150ms watchdog throttle ignores the first event; the next legitimate event still triggers a reload
+- Ctrl+C on `serve`: server shuts down, watchdog observer stops, registry entry is removed, port is released
+- File deleted while serving: subsequent requests get HTTP 500 with a "Failed to read file" message
+- Idempotent injection: re-serving the same file does not stack multiple `<script>` tags
+- `artify list` with empty registry: prints `No artify instances running.` to stdout, exits 0
+- `artify list` with a dead entry: the entry is shown with `STATUS=dead` and `URL=-` (no link), the registry file is kept (not auto-removed) so the user can decide
+- `artify kill` on an unknown port: prints `No artify instance on port <port>` to stderr, exits 1; no state change
+- `artify kill` on a dead PID: the registry file is still removed and the friendly `was already not running` message is printed; exit 0 (cleanup is the user-visible operation)
+- `artify kill` with `psutil.AccessDenied`: prints `Access denied killing pid <pid>: <reason>` to stderr, exits 1; the registry entry is left in place so the user can investigate
+- `artify restart` when the file no longer exists: error to stderr, exit 1; the existing instance is not killed and the registry entry is left in place
+- `artify snapshot` with no page connected: server waits up to `snapshot_timeout` seconds (default 30s), then returns 408; the CLI surfaces this as `Page did not respond within <timeout>s` and exits 1
+- `artify snapshot` against a page that has no inputs: returns `{"fields": {}}` (empty dict is a valid result), exits 0
+- `artify snapshot` with `--timeout` < 1.0: Click rejects with a usage error (FloatRange minimum 1.0), exit 2
+- Concurrent `artify list` and a serving instance writing its registry: atomic `.tmp` → `os.replace` means the reader never sees a partial file
+- `~/.artify/instances/` does not exist at startup: `artify list` treats that as an empty registry and prints `No artify instances running.`
+- A corrupt entry under `~/.artify/instances/`: `artify list` silently skips it (the bad JSON doesn't poison the whole list)
+
+---
+
 ## Tool: essh — Portable SSH Wrapper
 
 Portable SSH wrapper CLI that makes SSH sane across Windows/WSL/Linux. Adds name abstraction, agent authorization gating, and cross-environment portability.

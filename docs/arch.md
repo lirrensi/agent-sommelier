@@ -15,6 +15,7 @@ agent-sommelier/
 │   ├── crony/               # Cron job scheduler (package)
 │   ├── screenshot.py        # Screen capture
 │   ├── essh.py              # Portable SSH wrapper
+│   ├── artify.py            # HTML artifact preview + live-reload
 │   ├── skill_store/          # Skill registry (CLI + MCP)
 │   │   ├── __init__.py
 │   │   ├── core.py
@@ -1502,12 +1503,343 @@ No new external dependencies are introduced.
 
 ---
 
+## Component: artify
+
+### File
+`src/agent_sommelier/artify.py`
+
+### Entry Point
+```python
+artify = "agent_sommelier.artify:main"
+```
+
+### Commands
+- `artify open FILE` — Open FILE in the default browser via `file://` (no server, no reload)
+- `artify serve FILE [--webview]` — Serve FILE on a random local port with polling-based live-reload, open in browser tab (or in a chromeless app-mode window with `--webview`)
+- `artify list` — List every registered `serve` instance with live liveness detection
+- `artify kill PORT` — Terminate the `serve` instance on PORT and clean up its registry entry
+- `artify restart PORT` — Kill the instance on PORT (if alive) and re-serve the same file on a new, free port
+- `artify snapshot PORT [--timeout N]` — Read the current form state of the page served on PORT (via a command/response protocol) and print it as JSON
+
+### Implementation Flow
+
+```
+main()  @click.group
+    |
+    +-- open(file)
+    |       |
+    |       +-- url = f"file:///{file.resolve().as_posix()}"
+    |       +-- webbrowser.open_new_tab(url)
+    |       +-- click.echo(...)
+    |
+    +-- serve(file, webview)
+    |       |
+    |       +-- server, port, state = start_server(file)
+    |       |       |
+    |       |       +-- state = InstanceState(file, snapshot_timeout=...)
+    |       |       +-- handler = functools.partial(ArtifyHandler,
+    |       |       |                                  state=state,
+    |       |       |                                  file_path=file)
+    |       |       +-- ReusableTCPServer(("127.0.0.1", 0), handler)
+    |       |       +-- port = server.server_address[1]
+    |       |
+    |       +-- write_registry_entry(port, os.getpid(), file)
+    |       +-- open_with_browser(url, webview)
+    |       |       |
+    |       |       +-- if webview and find_app_browser() returns launcher:
+    |       |       |       +-- subprocess.Popen(launcher, detached)
+    |       |       +-- else: webbrowser.open_new_tab(url)
+    |       |
+    |       +-- watch_and_serve(file, server, state)
+    |       |       +-- watchdog.Observer scheduled on file.parent
+    |       |       +-- Observer.start() in background thread
+    |       |       +-- server.serve_forever() on main thread
+    |       |       +-- on KeyboardInterrupt: observer.stop(), observer.join()
+    |       |
+    |       +-- finally: server.shutdown(), server.server_close(),
+    |                  remove_registry_entry(port)
+    |
+    +-- list_cmd()
+    |       +-- entries = read_registry()  # augments each with alive bool
+    |       +-- render Rich table
+    |
+    +-- kill(port)
+    |       +-- entry = _read_registry_entry(port)
+    |       +-- was_alive = is_pid_alive(entry.pid)
+    |       +-- if was_alive: _terminate_pid(pid)  # SIGTERM -> 2s -> SIGKILL
+    |       +-- remove_registry_entry(port)
+    |       +-- print success or "already not running" message
+    |
+    +-- restart(port)
+    |       +-- entry = _read_registry_entry(port)
+    |       +-- if file missing on disk: error, exit 1
+    |       +-- best-effort _terminate_pid(entry.pid)
+    |       +-- remove_registry_entry(port)
+    |       +-- subprocess.Popen([sys.executable, "-m",
+    |       |                    "agent_sommelier.artify", "serve", str(file)],
+    |       |                    creationflags=... or start_new_session=True,
+    |       |                    stdin/stdout/stderr=DEVNULL)
+    |       +-- time.sleep(0.3)  # let the new instance write its registry entry
+    |
+    +-- snapshot(port, timeout)
+            +-- urlopen(POST http://127.0.0.1:{port}/__snapshot_request,
+            |            timeout=timeout + 5)
+            +-- on 200: print payload as JSON
+            +-- on 408: "Page did not respond within {timeout}s", exit 1
+            +-- on URLError: "No artify instance on port {port}", exit 1
+```
+
+### Server Architecture
+
+The `serve` command runs an in-process HTTP server bound to `127.0.0.1` on a random free port (passed as `0` to `TCPServer`, the OS picks). The server is local-only — it does not bind to `0.0.0.0` and is not reachable from other machines.
+
+#### InstanceState (per-server state)
+
+`InstanceState` is the single per-instance state object passed to every request via the handler factory. It carries three independent concerns, each protected by its own `threading.Lock` so they do not contend with each other:
+
+| Field | Lock | Purpose |
+|---|---|---|
+| `_mtime: float` (legacy `get()` / `update_from_disk()` / `bump()`) | `_mtime_lock` | File mtime cache for live-reload (same semantics as the old `ReloadState`) |
+| `pending_commands: list[dict]` | `commands_lock` | Command queue: `__snapshot_request` enqueues here; the page's `__commands` poll drains it |
+| `pending_snapshots: dict[str, threading.Event]` + `snapshot_results: dict[str, dict \| None]` | `results_lock` | Snapshot wait/result registry: per-sid `Event` for the blocking handler to wait on, plus a `None`-then-dict slot for the result payload |
+
+The mtime API is kept for backward compatibility (the old `ReloadState` class is a module-level alias for `InstanceState`). The command queue and snapshot registry are the new pieces used by the snapshot protocol — see "Snapshot Mechanism" below.
+
+| Method | Effect |
+|---|---|
+| `get() -> float` | Returns the cached mtime (legacy) |
+| `update_from_disk()` | Re-reads the file's mtime via `stat()` and updates the cache (called by the handler on every poll) |
+| `bump()` | Sets the cached mtime to `time.time()` (called by the watchdog event handler on a debounced file modification) |
+| `enqueue_command(cmd)` | Append a command to the page-bound queue (under `commands_lock`) |
+| `drain_commands() -> list[dict]` | Atomically return and clear the queue (under `commands_lock`) |
+| `register_snapshot(sid) -> Event` | Allocate a `(event, result=None)` slot for sid (under `results_lock`); returns the event the handler will wait on |
+| `set_snapshot_result(sid, data) -> bool` | Record the page's response for sid and signal the waiter; returns False if sid is unknown (caller responds 404) |
+| `wait_for_snapshot(sid, timeout=None) -> dict \| None` | Block on sid's event (or `InstanceState.snapshot_timeout` if `timeout` is None); on signal, return the result; on timeout, drop the slot and return None |
+
+#### ArtifyHandler
+
+`http.server.BaseHTTPRequestHandler` subclass. Bound per-request with `functools.partial(ArtifyHandler, state=state, file_path=file_path)`.
+
+| Route | Method | Response |
+|---|---|---|
+| `/` or `/index.html` | GET | 200 `text/html`; reads file from disk, injects reload script (idempotent), serves body |
+| `/__reload.js` | GET | 200 `application/javascript`; returns the small `RELOAD_JS` polling script |
+| `/__reload_check` | GET | 200 `text/plain`; returns the current cached mtime as a float string |
+| `/__commands` | GET | 200 `application/json`; drains and returns the pending command queue as a JSON array |
+| `/__snapshot_request` | POST | 200 `application/json` with the page's response; 408 on server-side timeout; blocks the handler thread until the page replies or `snapshot_timeout` elapses |
+| `/__snapshot_result/<sid>` | POST | 200 `{"ok": true}` on success; 404 on unknown sid; 400 on malformed JSON |
+| Anything else | any | 404 |
+
+The handler overrides `log_message()` to silence the default per-request log line; pass `quiet=False` on the class to restore it.
+
+Non-HTML files (not `.html` / `.htm`) are served as `text/html` without script injection — the browser attempts to render whatever the content is (e.g., SVG).
+
+#### ReusableTCPServer (threaded)
+
+`ReusableTCPServer` is a `socketserver.ThreadingMixIn + socketserver.TCPServer` subclass:
+
+```python
+class ReusableTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+```
+
+- `allow_reuse_address = True` so port 0 + rapid restart (e.g. iterating `artify serve` in a shell loop) does not hit `OSError: [Errno 98] Address already in use` during the TIME_WAIT window.
+- `ThreadingMixIn` + `daemon_threads = True` is required by the snapshot design. `POST /__snapshot_request` blocks in its handler thread for up to `snapshot_timeout` seconds while it waits for the page to POST its response. During that window, the page must still be able to `GET /__commands` (so the snapshot command is delivered) and `POST /__snapshot_result/<id>` (so the response is delivered) on different worker threads. If the server were single-threaded (the `TCPServer` default), those would queue behind the snapshot request and the protocol would deadlock. `daemon_threads = True` ensures any in-flight handler threads die with the server if the process is hard-killed.
+
+#### Watchdog Integration
+
+`watch_and_serve(file, server, state)` spawns a `watchdog.observers.Observer` on the file's parent directory (non-recursive) and runs `server.serve_forever()` on the main thread.
+
+The internal event handler:
+1. Ignores directory events
+2. Throttles bursts: if two `on_modified` events fire within 150ms (`time.monotonic()`), the second is dropped. This handles editors that write to a temp file and rename — the rename fires a synthetic `on_modified` against the original path that is a duplicate of the actual save.
+3. Resolves the event's `src_path` and compares to the target file's resolved path; only reacts to events on the served file.
+4. On a real change, calls `state.bump()` to mark the cache as changed.
+
+The handler also re-reads the file's mtime on every `/__reload_check` request, so a missed watchdog event does not cause a stale view. The watchdog events are essentially a "fast path" that pre-empts the next poll; the mtime-on-poll is the source of truth.
+
+#### Script Injection
+
+`inject_reload_script(html)` is called by the handler before serving `GET /`:
+
+1. If `INJECT_MARKER` (`<!--ARTIFY_RELOAD-->`) is already in the HTML, returns unchanged (idempotency guard for users who may have manually embedded the marker).
+2. Otherwise, builds `<!--ARTIFY_RELOAD--><script src="/__reload.js"></script>` and inserts it just before the last `</body>`, else before `</html>`, else at the end of the string.
+3. Search is case-insensitive for the closing tag, but insertion uses the original casing from the source HTML.
+
+The injected script (`RELOAD_JS`) does two things in two independent 500ms `setInterval` loops:
+- The **live-reload poll** (`/__reload_check`): if the mtime changes between polls, calls `location.reload()`.
+- The **command poll** (`/__commands`): for each command of `type == "snapshot"`, collects the current form field values (or calls `window.__artify_collect__` if the page defined it) and POSTs them to `/__snapshot_result/<id>`.
+
+### Snapshot Mechanism
+
+The snapshot protocol is a small command/response dance on top of the existing `/__commands` polling loop. The blocking `__snapshot_request` handler and the page's two polling endpoints (one for commands, one for the result) run on independent threads because the server is `ThreadingMixIn`-based.
+
+```
+   CLI                                    server (artify serve)                    page
+    |                                            |                                  |
+    |  POST /__snapshot_request                  |                                  |
+    |-------------------------------------------->|                                  |
+    |  (blocks in handler thread)                |                                  |
+    |                                            | 1. uuid = uuid4().hex           |
+    |                                            | 2. enqueue {"type":"snapshot",  |
+    |                                            |              "id": uuid}        |
+    |                                            | 3. register_snapshot(uuid)      |
+    |                                            |    -- allocates Event slot      |
+    |                                            | 4. wait_for_snapshot(uuid,      |
+    |                                            |         timeout=snapshot_t)     |
+    |                                            |                                  |
+    |                                            |     GET /__commands              |
+    |                                            |<---------------------------------|
+    |                                            |     [snapshot, ...]              |
+    |                                            |--------------------------------->|
+    |                                            |                                  |
+    |                                            |   page collects form fields     |
+    |                                            |   (or window.__artify_collect__) |
+    |                                            |                                  |
+    |                                            |   POST /__snapshot_result/uuid  |
+    |                                            |   {"fields": {...}}              |
+    |                                            |<---------------------------------|
+    |                                            |                                  |
+    |                                            | set_snapshot_result(uuid, ...)  |
+    |                                            |   -- stores payload             |
+    |                                            |   -- event.set()                |
+    |                                            | wait_for_snapshot() unblocks,   |
+    |                                            |   returns 200 with payload      |
+    |  200 OK, body = {"fields": {...}}           |                                  |
+    |<--------------------------------------------|                                  |
+```
+
+**Server-side handler flow (`_handle_snapshot_request`):**
+1. Allocate `sid = uuid.uuid4().hex`.
+2. Enqueue `{"type": "snapshot", "id": sid}` so the page's `/__commands` poll sees it.
+3. Register the snapshot slot (`pending_snapshots[sid] = Event`, `snapshot_results[sid] = None`).
+4. Block on `wait_for_snapshot(sid, timeout=InstanceState.snapshot_timeout)`.
+5. On result: return 200 with the payload dict.
+6. On timeout: return 408 with `{"error": "page did not respond"}`; the slot is dropped in `wait_for_snapshot` so a late page response does not accumulate.
+
+**Server-side result handler (`_handle_snapshot_result`):**
+1. Read `Content-Length` bytes from the request body.
+2. JSON-decode; on `UnicodeDecodeError` / `JSONDecodeError` return 400 `{"error": "invalid json body"}`.
+3. Normalize: if the top-level is not a dict, treat as `{}`; if `fields` is not a dict, treat as `{}`.
+4. Call `state.set_snapshot_result(sid, {"fields": fields})`. If `sid` is unknown (already timed out and removed, or bogus), return 404 `{"error": "unknown snapshot id"}`.
+5. Return 200 `{"ok": true}`.
+
+**Page-side flow (inside `RELOAD_JS`):**
+- Every 500ms, `GET /__commands` and parse the JSON array.
+- For each item, if `cmd.type === "snapshot"`: call `collect()` (default form-field collector, or `window.__artify_collect__` if the page defined one) and `POST /__snapshot_result/<encodeURIComponent(cmd.id)>` with `{"fields": <collected>}`.
+
+**Why threading matters:** the request handler thread is blocked in `wait_for_snapshot` for the entire duration. If the server were `TCPServer` (single-threaded, request-at-a-time), the page's `/__commands` poll would queue behind the snapshot request and the protocol would deadlock. `ThreadingMixIn` + `daemon_threads = True` ensures the page can deliver its response on a different worker thread.
+
+### Instance Registry
+
+Every `serve` instance writes a small JSON file under `~/.artify/instances/` (path: `Path.home() / ".artify" / "instances"`), one file per instance, named after the bound port: `<port>.json`.
+
+```
+~/.artify/
+└── instances/
+    ├── 54321.json     # {"port": 54321, "pid": 12345, "file": "...", "started_at": "..."}
+    ├── 54322.json
+    └── ...
+```
+
+**Schema:**
+
+```json
+{
+  "port": 54321,
+  "pid": 12345,
+  "file": "/abs/path/to/index.html",
+  "started_at": "2026-06-20T15:30:00+00:00"
+}
+```
+
+**Helpers:**
+
+| Function | Effect |
+|---|---|
+| `write_registry_entry(port, pid, file)` | Atomic write: writes `<port>.json.tmp` first, then `os.replace` onto `<port>.json`. Best-effort: any `OSError` is swallowed (registry is observability, not correctness). |
+| `remove_registry_entry(port)` | `Path.unlink()` on `<port>.json`. Silent on `FileNotFoundError` and other `OSError` (idempotent, safe to call when entry is already gone). |
+| `read_registry() -> list[dict]` | Reads every `*.json` in `REGISTRY_DIR`, parses, augments with `alive = psutil.pid_exists(pid)`, skips corrupt/non-dict entries, returns sorted by `port` ascending. |
+| `_read_registry_entry(port) -> dict \| None` | Read and parse a single entry by port; returns `None` on missing or corruption. |
+| `is_pid_alive(pid) -> bool` | `psutil.pid_exists(int(pid))`; returns False on bogus values (`ValueError` / `TypeError` are caught). |
+| `collect_serving_url(port) -> str` | Returns the canonical `http://127.0.0.1:<port>/` URL. |
+
+**Liveness detection:** `artify list` augments each entry with an `alive` flag via `psutil.pid_exists`. Stale (dead) entries are kept — the CLI never auto-removes them. The user sees a `STATUS=dead` row and can decide to `artify kill <port>` to clean it up.
+
+**Concurrency:** the atomic `.tmp` → `os.replace` write means a concurrent `artify list` (which iterates the directory and reads each file) never sees a half-written file. The registry is intentionally simple — no lockfile, no database — because it is observability, not a coordination point.
+
+**Cleanup responsibilities:**
+
+| Trigger | Removal site |
+|---|---|
+| `Ctrl+C` on a `serve` instance | `serve()` command's `finally` block calls `remove_registry_entry(port)` |
+| `artify kill PORT` | After the process terminates, `remove_registry_entry(port)` is called |
+| `artify restart PORT` | After the old process is killed, `remove_registry_entry(old_port)` is called; the new instance writes its own entry to `<new_port>.json` |
+
+### Cross-Platform Process Termination
+
+`artify kill` and `artify restart` use a small shared helper, `_terminate_pid(pid, grace_seconds=2.0)`, to terminate the target process cross-platform:
+
+```
+_terminate_pid(pid, grace_seconds=2.0)
+    |
+    +-- if not is_pid_alive(pid): return           # already dead
+    |
+    +-- proc = psutil.Process(pid)
+    +-- proc.terminate()                            # SIGTERM (Posix) / TerminateProcess (Windows)
+    |
+    +-- deadline = time.monotonic() + grace_seconds
+    |   while time.monotonic() < deadline and is_pid_alive(pid):
+    |       time.sleep(0.05)                        # poll for exit
+    |
+    +-- if is_pid_alive(pid):                       # still alive after grace
+            psutil.Process(pid).kill()              # SIGKILL (Posix) / TerminateProcess (Windows)
+```
+
+- `psutil.Process.terminate()` is the polite signal: it asks the process to exit. On Windows it calls `TerminateProcess`; on Unix it sends `SIGTERM`. The process gets a chance to flush, run cleanup handlers, etc.
+- If the process has not exited within `grace_seconds` (default 2s), `psutil.Process.kill()` is used as a hard escalation. This is non-graceful and does not give the process a chance to run cleanup.
+- The helper is **best-effort** by design: it is allowed to silently swallow `psutil.NoSuchProcess` (the process exited between the `is_pid_alive` check and the `terminate()` call). `psutil.AccessDenied` is NOT swallowed — the caller decides what to do with it (the `kill` command prints the error to stderr and exits 1; `restart` swallows it as part of its best-effort semantics).
+- `artify kill` uses the helper in its main path; `artify restart` wraps the call in a `try/except (psutil.NoSuchProcess, psutil.AccessDenied): pass` so a kill failure on the old instance never blocks the new instance from spawning.
+
+### App-Mode Browser Detection
+
+`find_app_browser() -> list[str] | None` returns an argv template with a literal `{url}` slot, or `None` if no supported browser is installed:
+
+| Platform | Detection | Launcher |
+|---|---|---|
+| Windows | `shutil.which("msedge.exe")` (preferred) | `[msedge.exe, "--app={url}"]` |
+| Windows | `shutil.which("chrome.exe")` (fallback) | `[chrome.exe, "--app={url}"]` |
+| macOS | `Path("/Applications/Google Chrome.app").exists()` | `["open", "-na", "Google Chrome", "--args", "--app={url}"]` |
+| Linux | `shutil.which("google-chrome")` | `[google-chrome, "--app={url}"]` |
+| Linux | `shutil.which("chromium")` | `[chromium, "--app={url}"]` |
+| Linux | `shutil.which("chromium-browser")` | `[chromium-browser, "--app={url}"]` |
+
+`open_in_webview(url)` substitutes `{url}` into the template and spawns the process detached:
+
+- Windows: `subprocess.Popen(cmd, stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL, creationflags=DETACHED_PROCESS|CREATE_NEW_PROCESS_GROUP, close_fds=True)`
+- Unix: `subprocess.Popen(cmd, stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL, start_new_session=True)`
+
+If no launcher is found, `open_with_browser()` falls back to `webbrowser.open_new_tab(url)` and prints a one-line warning to stderr. The `--webview` flag never errors on a missing browser.
+
+### Dependencies
+- **click** — CLI framework (existing core dep)
+- **watchdog >= 4.0.0** — filesystem observation (new core dep, added for artify)
+- **psutil** — process liveness + cross-platform termination (existing core dep, reused for `kill` and `restart`)
+- **rich** — table output for `artify list` (existing core dep)
+
+`watchdog` is imported lazily inside `watch_and_serve` so the `open` command does not require it. `psutil` is used at the top of the module because `is_pid_alive` is on the hot path of `kill` and `list`.
+
+---
+
 ## Dependencies Graph
 
 ```
 click >= 8.1.0          <-- All tools (CLI framework)
     |
 rich >= 13.0.0          <-- bg, crony, essh, skill-store (table output)
+    |
+watchdog >= 4.0.0       <-- artify (filesystem events for live-reload)
     |
 dateparser >= 1.2.0    <-- crony (optional, natural language)
     |
