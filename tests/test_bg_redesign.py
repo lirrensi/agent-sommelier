@@ -839,5 +839,439 @@ class TestBgRedesign(unittest.TestCase):
         self.assertFalse((self.jobs_root / "records" / corrupt_uid).exists())
 
 
+class TestBgWaitAgentProtection(unittest.TestCase):
+    """Cover the agent-protection timeout on `bg wait` / `bg wait-all`.
+
+    These tests verify:
+    - `is_agent_invocation` returns the right thing for every stdin/stdout
+      combination, and degrades safely on broken streams.
+    - `resolve_wait_deadline` is the canonical truth for the default
+      120s cap in non-TTY mode and the override rules.
+    - `bg wait` / `bg wait-all` exit 0 on timeout, write the exact stderr
+      message the plan specifies, and leave the underlying job alive.
+    - `_format_wait_timeout` produces the required substring set in
+      single-job, match, and wait-all modes.
+    """
+
+    def setUp(self) -> None:
+        self.temp_root = Path(tempfile.mkdtemp(prefix="bg_wait_timeout_"))
+        self.jobs_root = self.temp_root / "agentcli_bgjobs"
+        self.jobs_root.mkdir(parents=True, exist_ok=True)
+
+        import agent_sommelier.bg as bg
+
+        bg.JOBS_DIR = self.jobs_root
+        bg.RECORDS_DIR = self.jobs_root / "records"
+        bg.INDEX_FILE = self.jobs_root / "index.json"
+
+    def cli(self, *args: str) -> subprocess.CompletedProcess[str]:
+        env = os.environ.copy()
+        env.update(
+            {
+                "TEMP": str(self.temp_root),
+                "TMP": str(self.temp_root),
+                "TMPDIR": str(self.temp_root),
+            }
+        )
+
+        script = textwrap.dedent(
+            f"""
+            import sys
+            sys.path.insert(0, {str(BG_SRC)!r})
+            from agent_sommelier import bg
+            bg.FRIENDLY_WORDS = ['sleepy']
+            sys.argv = ['bg', {", ".join(repr(a) for a in args)}]
+            bg.main()
+            """
+        )
+
+        return subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+    # --- is_agent_invocation unit tests -----------------------------------
+
+    def test_is_agent_invocation_true_when_only_stdout_is_tty(self) -> None:
+        import agent_sommelier.bg as bg
+
+        with mock.patch.object(bg.sys.stdout, "isatty", return_value=True), \
+             mock.patch.object(bg.sys.stdin, "isatty", return_value=False):
+            self.assertTrue(bg.is_agent_invocation())
+
+    def test_is_agent_invocation_true_when_only_stdin_is_tty(self) -> None:
+        import agent_sommelier.bg as bg
+
+        with mock.patch.object(bg.sys.stdout, "isatty", return_value=False), \
+             mock.patch.object(bg.sys.stdin, "isatty", return_value=True):
+            self.assertTrue(bg.is_agent_invocation())
+
+    def test_is_agent_invocation_true_when_neither_is_tty(self) -> None:
+        import agent_sommelier.bg as bg
+
+        with mock.patch.object(bg.sys.stdout, "isatty", return_value=False), \
+             mock.patch.object(bg.sys.stdin, "isatty", return_value=False):
+            self.assertTrue(bg.is_agent_invocation())
+
+    def test_is_agent_invocation_false_when_both_are_tty(self) -> None:
+        import agent_sommelier.bg as bg
+
+        with mock.patch.object(bg.sys.stdout, "isatty", return_value=True), \
+             mock.patch.object(bg.sys.stdin, "isatty", return_value=True):
+            self.assertFalse(bg.is_agent_invocation())
+
+    def test_is_agent_invocation_true_on_broken_pipe(self) -> None:
+        """A broken pipe / closed stream must default to agent mode (safer)."""
+        import agent_sommelier.bg as bg
+
+        with mock.patch.object(
+            bg.sys.stdout,
+            "isatty",
+            side_effect=ValueError("I/O operation on a closed file"),
+        ), mock.patch.object(bg.sys.stdin, "isatty", return_value=True):
+            self.assertTrue(bg.is_agent_invocation())
+
+    # --- resolve_wait_deadline unit tests ---------------------------------
+
+    def test_resolve_wait_deadline_none_in_agent_mode_caps_at_120(self) -> None:
+        import agent_sommelier.bg as bg
+
+        with mock.patch.object(bg, "is_agent_invocation", return_value=True):
+            before = time.time()
+            deadline = bg.resolve_wait_deadline(None)
+            after = time.time()
+            self.assertIsNotNone(deadline)
+            # Should land within ~120s of the call time, with a little slack
+            self.assertGreaterEqual(deadline, before + bg.BG_WAIT_AGENT_TIMEOUT_SECONDS - 0.5)
+            self.assertLessEqual(deadline, after + bg.BG_WAIT_AGENT_TIMEOUT_SECONDS + 0.5)
+            self.assertEqual(bg.BG_WAIT_AGENT_TIMEOUT_SECONDS, 120)
+
+    def test_resolve_wait_deadline_none_in_tty_mode_returns_none(self) -> None:
+        import agent_sommelier.bg as bg
+
+        with mock.patch.object(bg, "is_agent_invocation", return_value=False):
+            self.assertIsNone(bg.resolve_wait_deadline(None))
+
+    def test_resolve_wait_deadline_zero_disables_cap(self) -> None:
+        import agent_sommelier.bg as bg
+
+        with mock.patch.object(bg, "is_agent_invocation", return_value=True):
+            self.assertIsNone(bg.resolve_wait_deadline(0))
+        with mock.patch.object(bg, "is_agent_invocation", return_value=False):
+            self.assertIsNone(bg.resolve_wait_deadline(0))
+
+    def test_resolve_wait_deadline_explicit_value_wins_in_tty_mode(self) -> None:
+        import agent_sommelier.bg as bg
+
+        with mock.patch.object(bg, "is_agent_invocation", return_value=False):
+            before = time.time()
+            deadline = bg.resolve_wait_deadline(300)
+            after = time.time()
+            self.assertIsNotNone(deadline)
+            self.assertGreaterEqual(deadline, before + 299.5)
+            self.assertLessEqual(deadline, after + 300.5)
+
+    def test_resolve_wait_deadline_small_explicit_value_in_agent_mode(self) -> None:
+        import agent_sommelier.bg as bg
+
+        with mock.patch.object(bg, "is_agent_invocation", return_value=True):
+            before = time.time()
+            deadline = bg.resolve_wait_deadline(0.5)
+            after = time.time()
+            self.assertIsNotNone(deadline)
+            self.assertGreaterEqual(deadline, before + 0.3)
+            self.assertLessEqual(deadline, after + 0.7)
+
+    # --- _format_wait_timeout message-format sanity -----------------------
+
+    def test_format_wait_timeout_single_job_includes_required_substrings(
+        self,
+    ) -> None:
+        """Pin the single-job message format against the plan's required text."""
+        import agent_sommelier.bg as bg
+
+        summary, hint = bg._format_wait_timeout(
+            timeout_seconds=0.5, job_ref="sleepy-pytest"
+        )
+        # Plan-mandated substrings
+        self.assertIn("Agent protection", summary)
+        self.assertIn("exited wait loop", summary)
+        self.assertIn("still running", summary)
+        # The required phrase is split across two lines in the output, so
+        # check the two halves of the sentence rather than the full string.
+        self.assertIn("intentionally terminated to keep the agent out of an", summary)
+        self.assertIn("infinite block", summary)
+        self.assertIn("sleepy-pytest", summary)
+        # Re-poll commands
+        self.assertIn("bg status sleepy-pytest", hint)
+        self.assertIn("bg wait sleepy-pytest --timeout 300", hint)
+        self.assertIn("bg wait sleepy-pytest --timeout 0", hint)
+        self.assertIn("bg logs sleepy-pytest", hint)
+
+    def test_format_wait_timeout_with_pattern_includes_pattern(self) -> None:
+        """The --match timeout message names the pattern that was not found."""
+        import agent_sommelier.bg as bg
+
+        summary, hint = bg._format_wait_timeout(
+            timeout_seconds=0.5,
+            job_ref="sleepy-pytest",
+            pattern="never_appears",
+        )
+        self.assertIn("never_appears", summary)
+        self.assertIn("not found", summary)
+        self.assertIn("bg wait sleepy-pytest --match never_appears", hint)
+
+    def test_format_wait_timeout_wait_all_lists_all_jobs(self) -> None:
+        """The wait-all timeout message lists every still-running job."""
+        import agent_sommelier.bg as bg
+
+        summary, hint = bg._format_wait_timeout(
+            timeout_seconds=0.5,
+            still_running=[
+                {"name": "sleepy-pytest", "elapsed_seconds": 75.0, "pid": 12345},
+                {"name": "rosy-pytest", "elapsed_seconds": 45.0, "pid": 67890},
+            ],
+        )
+        self.assertIn("Agent protection", summary)
+        self.assertIn("exited wait loop", summary)
+        self.assertIn("2 jobs are still running", summary)
+        self.assertIn("sleepy-pytest", summary)
+        self.assertIn("rosy-pytest", summary)
+        # Phrase split across two lines — check both halves
+        self.assertIn("intentionally terminated to keep the agent out of an", summary)
+        self.assertIn("infinite block", summary)
+        self.assertIn("bg list", hint)
+        self.assertIn("bg wait-all --timeout 300", hint)
+
+    def test_format_wait_timeout_handles_missing_pid_and_elapsed(self) -> None:
+        """Missing PID/elapsed in the snapshot should not crash the formatter."""
+        import agent_sommelier.bg as bg
+
+        # No snapshot at all (used when timeout fires before first poll)
+        summary, hint = bg._format_wait_timeout(
+            timeout_seconds=0.5, job_ref="sleepy-pytest", still_running=None
+        )
+        self.assertIn("Agent protection", summary)
+        self.assertIn("sleepy-pytest", summary)
+        self.assertIn("bg status sleepy-pytest", hint)
+        # Snapshot with neither elapsed nor pid
+        summary, _ = bg._format_wait_timeout(
+            timeout_seconds=0.5,
+            job_ref="sleepy-pytest",
+            still_running=[{"name": "sleepy-pytest", "pid": None, "elapsed_seconds": None}],
+        )
+        # format_elapsed returns "-" for None, so the running clause has
+        # "(elapsed -)" appended instead of a plain period.
+        self.assertIn("The job is still running", summary)
+
+    # --- bg wait end-to-end via subprocess --------------------------------
+
+    def test_wait_fires_timeout_in_non_tty_with_full_message(self) -> None:
+        """bg wait with --timeout 0.5 in non-TTY mode fires the safety cap,
+        exits 0, writes the full contract message to stderr, and leaves
+        the underlying job alive.
+        """
+        run = self.cli("run", 'python -c "import time; time.sleep(5)"')
+        self.assertEqual(run.returncode, 0, run.stderr)
+        name = run.stdout.strip()
+
+        start = time.perf_counter()
+        wait = self.cli("wait", name, "--timeout", "0.5")
+        elapsed = time.perf_counter() - start
+
+        # Exit 0 — the tool succeeded at its safety job
+        self.assertEqual(
+            wait.returncode,
+            0,
+            f"expected exit 0 on timeout, got {wait.returncode}: stderr={wait.stderr!r}",
+        )
+        # Fired within a reasonable time
+        self.assertLess(elapsed, 3.0, f"wait took {elapsed:.2f}s, expected < 3.0s")
+
+        stderr = wait.stderr
+        # All plan-required substrings
+        self.assertIn("Agent protection", stderr)
+        self.assertIn("exited wait loop", stderr)
+        self.assertIn(name, stderr)
+        self.assertIn("still running", stderr)
+        # The required phrase is split across two lines in the output, so
+        # check the two halves of the sentence rather than the full string.
+        self.assertIn("intentionally terminated to keep the agent out of an", stderr)
+        self.assertIn("infinite block", stderr)
+        # Re-poll commands
+        self.assertIn(f"bg status {name}", stderr)
+        self.assertIn(f"bg wait {name} --timeout 300", stderr)
+        # Job still alive
+        status = self.cli("status", name)
+        self.assertEqual(status.returncode, 0, status.stderr)
+        status_json = json.loads(status.stdout)
+        self.assertEqual(
+            status_json["status"],
+            "running",
+            f"job should still be running after timeout, got {status_json['status']}",
+        )
+
+    def test_wait_match_timeout_message_includes_pattern(self) -> None:
+        """bg wait --match with timeout must mention the pattern in stderr."""
+        run = self.cli("run", 'python -c "import time; time.sleep(5)"')
+        self.assertEqual(run.returncode, 0, run.stderr)
+        name = run.stdout.strip()
+
+        wait = self.cli(
+            "wait", name, "--match", "never_appears", "--timeout", "0.5"
+        )
+        self.assertEqual(
+            wait.returncode, 0, f"stderr={wait.stderr!r}"
+        )
+        self.assertIn("never_appears", wait.stderr)
+        self.assertIn("not found", wait.stderr)
+
+    def test_wait_timeout_zero_disables_cap(self) -> None:
+        """--timeout 0 disables the cap; the wait runs to completion without
+        a timeout message.
+        """
+        run = self.cli("run", 'python -c "import time; time.sleep(0.5)"')
+        self.assertEqual(run.returncode, 0, run.stderr)
+        name = run.stdout.strip()
+
+        start = time.perf_counter()
+        wait = self.cli("wait", name, "--timeout", "0")
+        elapsed = time.perf_counter() - start
+
+        self.assertEqual(wait.returncode, 0, f"stderr={wait.stderr!r}")
+        self.assertNotIn("Agent protection", wait.stderr)
+        # Should have actually waited for the job
+        self.assertGreaterEqual(elapsed, 0.1, f"wait was too fast: {elapsed:.2f}s")
+        # Job completed
+        status = self.cli("status", name)
+        self.assertEqual(status.returncode, 0, status.stderr)
+        status_json = json.loads(status.stdout)
+        self.assertEqual(status_json["status"], "completed")
+
+    def test_wait_timeout_explicit_override_fires_quickly(self) -> None:
+        """--timeout 0.5 against a 5s job must fire within ~1s."""
+        run = self.cli("run", 'python -c "import time; time.sleep(5)"')
+        self.assertEqual(run.returncode, 0, run.stderr)
+        name = run.stdout.strip()
+
+        start = time.perf_counter()
+        wait = self.cli("wait", name, "--timeout", "0.5")
+        elapsed = time.perf_counter() - start
+
+        self.assertEqual(wait.returncode, 0, f"stderr={wait.stderr!r}")
+        self.assertLess(elapsed, 2.0, f"timeout did not fire quickly: {elapsed:.2f}s")
+        self.assertIn("0.5s", wait.stderr)
+
+    def test_wait_timeout_negative_is_rejected_by_click(self) -> None:
+        """--timeout -1 must be rejected by click.FloatRange with a usage error."""
+        run = self.cli("run", 'python -c "import time; time.sleep(5)"')
+        self.assertEqual(run.returncode, 0, run.stderr)
+        name = run.stdout.strip()
+
+        wait = self.cli("wait", name, "--timeout", "-1")
+        # Click exits with code 2 on usage error
+        self.assertNotEqual(wait.returncode, 0)
+        self.assertIn("timeout", wait.stderr.lower())
+
+    def test_wait_nonexistent_job_errors_without_hanging(self) -> None:
+        """bg wait on a missing job must fail fast, not hang on the timeout."""
+        start = time.perf_counter()
+        wait = self.cli(
+            "wait", "does-not-exist-xyz", "--timeout", "0.5"
+        )
+        elapsed = time.perf_counter() - start
+
+        self.assertNotEqual(wait.returncode, 0)
+        self.assertIn("not found", wait.stderr.lower())
+        # Should fail well before the 0.5s timeout
+        self.assertLess(elapsed, 1.0, f"wait hung for {elapsed:.2f}s")
+
+    # --- bg wait-all end-to-end via subprocess ----------------------------
+
+    def test_wait_all_timeout_lists_running_jobs(self) -> None:
+        """bg wait-all with --timeout 0.5 must list every still-running job
+        in the stderr message and exit 0.
+        """
+        first = self.cli("run", 'python -c "import time; time.sleep(2)"')
+        self.assertEqual(first.returncode, 0, first.stderr)
+        first_name = first.stdout.strip()
+
+        second = self.cli("run", 'python -c "import time; time.sleep(2)"')
+        self.assertEqual(second.returncode, 0, second.stderr)
+        second_name = second.stdout.strip()
+
+        start = time.perf_counter()
+        wait_all = self.cli("wait-all", "--timeout", "0.5")
+        elapsed = time.perf_counter() - start
+
+        self.assertEqual(
+            wait_all.returncode, 0, f"stderr={wait_all.stderr!r}"
+        )
+        self.assertLess(elapsed, 2.0, f"wait-all took {elapsed:.2f}s")
+        stderr = wait_all.stderr
+        self.assertIn("Agent protection", stderr)
+        # The implementation uses "N job(s)" (count + plural) — both forms valid
+        self.assertTrue(
+            "2 jobs are still running" in stderr
+            or "2 job(s) are still running" in stderr,
+            f"expected job count in stderr, got: {stderr!r}",
+        )
+        self.assertIn(first_name, stderr)
+        self.assertIn(second_name, stderr)
+        # Both jobs are still alive
+        for name in (first_name, second_name):
+            status = self.cli("status", name)
+            self.assertEqual(status.returncode, 0, status.stderr)
+            self.assertEqual(
+                json.loads(status.stdout)["status"],
+                "running",
+                f"job {name} should still be running",
+            )
+
+    def test_wait_all_with_no_jobs_returns_immediately(self) -> None:
+        """bg wait-all with no targets must return immediately and NOT fire
+        a fake timeout.
+        """
+        start = time.perf_counter()
+        wait_all = self.cli("wait-all", "--timeout", "0.5")
+        elapsed = time.perf_counter() - start
+
+        self.assertEqual(wait_all.returncode, 0, f"stderr={wait_all.stderr!r}")
+        self.assertNotIn("Agent protection", wait_all.stderr)
+        self.assertEqual(wait_all.stdout.strip(), "")
+        self.assertLess(elapsed, 1.0, f"wait-all took {elapsed:.2f}s")
+
+    # --- TTY mode integration: no cap in TTY ------------------------------
+
+    def test_wait_in_tty_mode_does_not_cap(self) -> None:
+        """With is_agent_invocation patched to False (TTY), the default wait
+        must run to completion with no timeout, even against a long job.
+        """
+        import agent_sommelier.bg as bg
+
+        run = self.cli("run", 'python -c "import time; time.sleep(0.4)"')
+        self.assertEqual(run.returncode, 0, run.stderr)
+        name = run.stdout.strip()
+
+        with mock.patch.object(bg, "is_agent_invocation", return_value=False):
+            start = time.perf_counter()
+            try:
+                bg.wait.callback(name, None, None)
+            except SystemExit as exc:  # pragma: no cover - defensive
+                self.fail(
+                    f"TTY-mode wait must not exit via timeout; got SystemExit({exc.code!r})"
+                )
+            elapsed = time.perf_counter() - start
+
+        # Wait completed naturally in TTY mode
+        self.assertLess(elapsed, 5.0, f"wait took {elapsed:.2f}s")
+        # Job completed
+        status = self.cli("status", name)
+        self.assertEqual(status.returncode, 0)
+        self.assertEqual(json.loads(status.stdout)["status"], "completed")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

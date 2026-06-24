@@ -66,6 +66,29 @@ bg wait sleepy-pytest --match "needle"
 bg wait-all
 ```
 
+### Timeouts & Agent Safety
+
+`bg wait` and `bg wait-all` apply an **agent-protection timeout** by default: **120 seconds** in non-TTY (agent/script) mode, infinite in TTY (interactive) mode. Detection: if either stdin or stdout is not a TTY, the cap fires.
+
+Override the cap with `--timeout N` (float seconds, `N >= 0`):
+- `--timeout 0` disables the cap and waits until the job ends.
+- `--timeout 300` waits up to 5 minutes.
+
+When the cap fires:
+- A clear message is written to **stderr** (not stdout) explaining the wait loop — not the job — was terminated, naming the still-running job(s) and elapsed times, and listing the re-poll commands.
+- Exit code is `0`. The stderr message is the contract: agents should detect a timed-out wait by reading stderr, not by the exit code.
+
+**Recommended re-poll pattern:**
+```bash
+# Wait hit the 120s cap. The job is still running. Decide next step:
+bg status sleepy-pytest           # check current state
+bg wait sleepy-pytest --timeout 300   # wait up to 5 more minutes
+bg wait sleepy-pytest --timeout 0     # wait until the job ends (no cap)
+bg logs sleepy-pytest             # read partial output
+```
+
+In an interactive TTY terminal, the default behavior is unchanged (wait forever; `ctrl+c` to abort). The 120s cap only activates when the CLI is invoked as a subprocess, which is the common case for LLM agents.
+
 ### Read Job Output
 ```bash
 bg read sleepy-pytest   # stdout only

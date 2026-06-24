@@ -119,9 +119,9 @@ bg = "agent_sommelier.bg:main"
 - `bg run "CMD"` — Create background job and return a friendly name
 - `bg list` — List all jobs
 - `bg status JOB_REF` — Get job metadata by friendly name or UID
-- `bg wait JOB_REF` — Wait for terminal state
-- `bg wait JOB_REF --match PATTERN` — Wait for output match in stdout/stderr
-- `bg wait-all` — Wait for all known jobs
+- `bg wait JOB_REF` — Wait for terminal state. `--timeout N` (float seconds, `0` disables) overrides the default 120s non-TTY cap.
+- `bg wait JOB_REF --match PATTERN` — Wait for output match in stdout/stderr. `--timeout N` available.
+- `bg wait-all` — Wait for all known jobs. `--timeout N` available.
 - `bg read JOB_REF` — Read stdout
 - `bg logs JOB_REF` — Read stdout + stderr
 - `bg rm JOB_REF` — Remove job
@@ -269,6 +269,8 @@ Background job storage is self-pruning.
 `bg wait` and `bg wait-all` are polling commands over the existing files; they MUST NOT introduce a daemon or database.
 
 For output-match waits, the implementation SHOULD scan stdout/stderr incrementally until the pattern is found or the job exits.
+
+All wait commands apply an agent-protection timeout: 120 seconds in non-TTY mode (any of stdin/stdout is not a TTY), infinite in TTY (interactive) mode. The user can override with `--timeout N` (float seconds, `N >= 0`); `0` disables the cap entirely. The default is chosen by `is_agent_invocation()`, which detects the common case of an LLM agent invoking the CLI as a subprocess. When the cap fires, the wait loop exits, the underlying job is left running, and an informative message is written to stderr (not stdout). Exit code is `0` on timeout; the message is the contract — agents detect a timed-out wait by reading stderr rather than by the exit code. The default cap is centralized in the `BG_WAIT_AGENT_TIMEOUT_SECONDS` constant in `src/agent_sommelier/bg.py`.
 
 ---
 

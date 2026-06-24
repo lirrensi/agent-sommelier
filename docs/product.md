@@ -139,13 +139,36 @@ List all background jobs.
 
 Wait until a job reaches a terminal state.
 
+**Options:**
+- `--timeout N` (float seconds, `>= 0`) — Max seconds to wait before the wait loop exits. `0` disables the cap. Default: `120` in non-TTY (agent/script) mode, infinite in TTY (interactive) mode.
+
+**Behavior:**
+- The wait loop polls the job record every 0.2s until the job is terminal.
+- In non-TTY/agent mode, a 120-second safety cap fires by default so the wait cannot block an agent indefinitely. Override with `--timeout N`; pass `--timeout 0` to wait without a cap.
+- When the cap fires, a clear message is printed to stderr (not stdout) and the process exits `0`. The message names the job, its current elapsed time and PID, explains that the wait loop — not the job — was terminated, and lists the re-poll commands (`bg status`, `bg wait <name> --timeout N`, `bg wait <name> --timeout 0`, `bg logs`).
+- The stderr message is the contract — agents should treat its presence as "wait loop hit the safety cap, the job is still running".
+
 #### `bg wait JOB_REF --match PATTERN`
 
 Wait until PATTERN appears in stdout or stderr, then record a matched-output event.
 
+**Options:**
+- `--timeout N` (float seconds, `>= 0`) — Same as `bg wait`. The default 120s cap applies in non-TTY/agent mode and is disabled with `--timeout 0`.
+
+**Behavior:**
+- Scans stdout and stderr incrementally until the pattern is found or the job exits. If the job exits first, raises a `ClickException` ("Pattern not found before job finished").
+- On timeout, the stderr message additionally states that the pattern was not found yet and includes the pattern string in the re-poll commands.
+
 #### `bg wait-all`
 
 Wait until all known jobs are terminal.
+
+**Options:**
+- `--timeout N` (float seconds, `>= 0`) — Same default and override semantics as `bg wait`.
+
+**Behavior:**
+- Polls all known jobs every 0.2s. Returns once none are still running.
+- On timeout in non-TTY/agent mode, the stderr message names every still-running job with its current elapsed time and lists the re-poll commands. Exit code is `0`.
 
 #### `bg status JOB_REF`
 

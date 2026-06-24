@@ -2,7 +2,7 @@
 # PURPOSE: Manage detached background jobs with friendly names, stable UIDs, async launch workers, state refresh, and lightweight update events.
 # OWNS: bg CLI storage, naming, worker launch, process inspection, output capture, wait loops, and record cleanup.
 # EXPORTS: main (CLI entry point), create_job (launch helper), list_jobs (enumeration), load_job_snapshot (lookup), launch helpers, wait helpers
-# DOCS: docs/product.md, docs/arch.md, skills/bg-jobs/SKILL.md, .agents/reports/plan_bg_name_redesign_2026-03-27.md, .agents/reports/plan_bg_wait_notifications_2026-03-28.md, .agents/reports/plan_bg_immediate_fire_and_forget_2026-04-07.md
+# DOCS: docs/product.md, docs/arch.md, skills/bg-jobs/SKILL.md, .agents/reports/plan_bg_name_redesign_2026-03-27.md, .agents/reports/plan_bg_wait_notifications_2026-03-28.md, .agents/reports/plan_bg_immediate_fire_and_forget_2026-04-07.md, .agents/reports/plan_bg_wait_agent_protection_2026-06-24.md
 
 """Background job manager CLI."""
 
@@ -39,6 +39,22 @@ if not hasattr(click, "group"):
 
         return decorator
 
+    def _parse_mini_click_timeout(args: list[str]) -> float | None:
+        if "--timeout" not in args:
+            return None
+        idx = args.index("--timeout") + 1
+        if idx >= len(args):
+            raise _MiniClickException("Missing value for --timeout")
+        try:
+            value = float(args[idx])
+        except ValueError as exc:
+            raise _MiniClickException(
+                f"Invalid --timeout value: {args[idx]}"
+            ) from exc
+        if value < 0:
+            raise _MiniClickException("--timeout must be >= 0")
+        return value
+
     class _MiniClickGroup:
         def __init__(self, func):
             self.func = func
@@ -70,7 +86,8 @@ if not hasattr(click, "group"):
                 return command(json_output="--json" in argv[1:])
 
             if cmd_name == "wait-all":
-                return command()
+                timeout_seconds = _parse_mini_click_timeout(argv[1:])
+                return command(timeout_seconds=timeout_seconds)
 
             if cmd_name == "wait":
                 if len(argv) < 2:
@@ -82,7 +99,8 @@ if not hasattr(click, "group"):
                     if match_index + 1 >= len(argv):
                         raise _MiniClickException("Missing value for --match")
                     pattern = argv[match_index + 1]
-                return command(job_ref, pattern)
+                timeout_seconds = _parse_mini_click_timeout(argv[1:])
+                return command(job_ref, pattern, timeout_seconds=timeout_seconds)
 
             if cmd_name == "restart":
                 if len(argv) < 2:
@@ -126,6 +144,7 @@ TERMINAL_JOB_RETENTION_SECONDS = 60 * 60
 TERMINAL_JOB_CAP = 32
 BG_LAUNCH_TIMEOUT_SECONDS = 10
 LAUNCH_PID_PROBE_DELAY_SECONDS = 5
+BG_WAIT_AGENT_TIMEOUT_SECONDS = 120
 IN_PROGRESS_JOB_STATUSES = {"running", "launching", "starting"}
 LAUNCHING_JOB_STATUSES = {"launching", "starting"}
 
@@ -195,6 +214,169 @@ WRAPPER_TOKENS = {
 }
 
 NAME_SUFFIX_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+
+def is_agent_invocation() -> bool:
+    """True when the CLI is being driven by an agent, not a human at a TTY.
+
+    Detection: stdout is not a TTY or stdin is not a TTY. This is the common
+    case when an LLM agent invokes the CLI as a subprocess. Used to choose
+    the default wait timeout (capped) vs. infinite (human at terminal).
+    """
+    try:
+        stdout_tty = sys.stdout.isatty() if sys.stdout else False
+        stdin_tty = sys.stdin.isatty() if sys.stdin else False
+    except (ValueError, OSError):
+        return True
+    return not (stdout_tty and stdin_tty)
+
+
+class WaitTimeoutError(click.ClickException):
+    """Raised when the wait loop exits due to the safety timeout.
+
+    The CLI handler catches this and prints the message + hint to stderr
+    before exiting 0.
+    """
+
+    def __init__(self, summary: str, hint: str = ""):
+        super().__init__(summary)
+        self.summary = summary
+        self.hint = hint
+
+
+def resolve_wait_deadline(timeout_seconds: float | None) -> float | None:
+    """Resolve the effective wait deadline.
+
+    - If the user passed an explicit value (including 0), use it. ``0``
+      disables the cap and returns ``None``.
+    - Otherwise, in non-TTY mode, return
+      ``time.time() + BG_WAIT_AGENT_TIMEOUT_SECONDS``.
+    - Otherwise (TTY / interactive), return ``None`` (no cap).
+    """
+    if timeout_seconds is not None:
+        if timeout_seconds <= 0:
+            return None
+        return time.time() + timeout_seconds
+    if is_agent_invocation():
+        return time.time() + BG_WAIT_AGENT_TIMEOUT_SECONDS
+    return None
+
+
+def _format_timeout_display(timeout_seconds: float) -> str:
+    """Format a timeout (seconds) for display in the agent-protection message."""
+    if timeout_seconds == int(timeout_seconds):
+        return f"{int(timeout_seconds)}s"
+    return f"{timeout_seconds:g}s"
+
+
+def _format_wait_timeout(
+    *,
+    timeout_seconds: float,
+    job_ref: str | None = None,
+    pattern: str | None = None,
+    still_running: list[dict] | None = None,
+) -> tuple[str, str]:
+    """Build the (summary, hint) pair for a WaitTimeoutError.
+
+    - ``still_running`` is the list of currently-active job snapshots. When
+      it has more than one entry, the wait-all wording is used. When it has
+      one entry, the single-job wording is used and ``pattern`` (if any)
+      adds a "pattern not found yet" line. When it is ``None``, the
+      single-job wording is used with just ``job_ref`` (used when the
+      timeout fires before the first snapshot is read).
+    """
+    timeout_display = _format_timeout_display(timeout_seconds)
+
+    is_wait_all = still_running is not None and len(still_running) > 1
+    single_snapshot = (
+        still_running[0]
+        if still_running is not None and len(still_running) == 1
+        else None
+    )
+
+    if is_wait_all:
+        names_parts: list[str] = []
+        for job in still_running or []:
+            name = str(job.get("name") or job.get("uid") or "?")
+            elapsed = format_elapsed(job.get("elapsed_seconds"))
+            names_parts.append(f"'{name}' (elapsed {elapsed})")
+        names_line = ", ".join(names_parts)
+        count = len(still_running or [])
+        plural = "s" if count != 1 else ""
+        summary_lines = [
+            f"[bg] Agent protection: exited wait loop after {timeout_display}.",
+            f"[bg] {count} job{plural} are still running: {names_line}.",
+            "[bg] The wait loop was intentionally terminated to keep the agent out of an",
+            "     infinite block. The jobs themselves were NOT killed and are still alive.",
+        ]
+        hint_lines = [
+            "",
+            "[bg] To keep waiting:",
+            "[bg]   bg list                                  # see all running jobs",
+            "[bg]   bg wait-all --timeout 300                # wait up to 5 more minutes",
+            "[bg]   bg status <name>                         # check one job",
+            "[bg]   bg logs <name>                           # read partial output",
+        ]
+    else:
+        if single_snapshot is not None:
+            name = str(
+                single_snapshot.get("name")
+                or job_ref
+                or single_snapshot.get("uid")
+                or "?"
+            )
+            elapsed_seconds = single_snapshot.get("elapsed_seconds")
+            elapsed = format_elapsed(elapsed_seconds)
+            pid = single_snapshot.get("pid")
+        else:
+            name = job_ref or "?"
+            elapsed = None
+            pid = None
+
+        if pattern:
+            escaped_pattern = pattern.replace("'", "\\'")
+            running_clause = (
+                f"Pattern '{escaped_pattern}' was not found yet. "
+                "The job is still running"
+            )
+        else:
+            running_clause = "The job is still running"
+
+        if elapsed and pid:
+            running_line = f"[bg] {running_clause} (elapsed {elapsed}, PID {pid})."
+        elif elapsed:
+            running_line = f"[bg] {running_clause} (elapsed {elapsed})."
+        elif pid:
+            running_line = f"[bg] {running_clause} (PID {pid})."
+        else:
+            running_line = f"[bg] {running_clause}."
+
+        summary_lines = [
+            f"[bg] Agent protection: exited wait loop after {timeout_display} for '{name}'.",
+            running_line,
+            "[bg] The wait loop was intentionally terminated to keep the agent out of an",
+            "     infinite block. The job itself was NOT killed and is still alive.",
+        ]
+        hint_lines = [
+            "",
+            "[bg] To keep waiting:",
+            f"[bg]   bg status {name}                  # check current state",
+        ]
+        if pattern:
+            escaped_pattern_hint = pattern.replace("'", "\\'")
+            hint_lines.append(
+                f"[bg]   bg wait {name} --match {escaped_pattern_hint}     "
+                "# wait for pattern again"
+            )
+        hint_lines.extend(
+            [
+                f"[bg]   bg wait {name} --timeout 300      # wait up to 5 more minutes",
+                f"[bg]   bg wait {name} --timeout 0        # wait until the job ends",
+                f"[bg]   bg logs {name}                    # read partial output",
+            ]
+        )
+
+    return "\n".join(summary_lines), "\n".join(hint_lines)
 
 
 def ensure_jobs_dir() -> None:
@@ -1035,9 +1217,26 @@ def is_terminal_snapshot(job: dict) -> bool:
     return job.get("exit_code") is not None
 
 
-def wait_for_completion(job_ref: str) -> dict:
+def wait_for_completion(
+    job_ref: str,
+    *,
+    deadline: float | None = None,
+    timeout_seconds: float | None = None,
+) -> dict:
+    last_snapshot: dict | None = None
+    display_timeout = timeout_seconds
     while True:
+        if deadline is not None and time.time() >= deadline:
+            summary, hint = _format_wait_timeout(
+                timeout_seconds=display_timeout
+                if display_timeout is not None
+                else BG_WAIT_AGENT_TIMEOUT_SECONDS,
+                job_ref=job_ref,
+                still_running=[last_snapshot] if last_snapshot is not None else None,
+            )
+            raise WaitTimeoutError(summary, hint)
         job = load_job_snapshot(job_ref, refresh_process=True)
+        last_snapshot = job
         if job is None:
             raise click.ClickException(f"Job not found: {job_ref}")
         if job.get("record_state") != "ok":
@@ -1049,16 +1248,34 @@ def wait_for_completion(job_ref: str) -> dict:
         time.sleep(0.2)
 
 
-def wait_for_match(job_ref: str, pattern: str) -> dict:
+def wait_for_match(
+    job_ref: str,
+    pattern: str,
+    *,
+    deadline: float | None = None,
+    timeout_seconds: float | None = None,
+) -> dict:
     if not pattern:
         raise click.ClickException("--match requires a non-empty pattern")
 
     offsets = {"stdout": 0, "stderr": 0}
     tails = {"stdout": "", "stderr": ""}
     tail_limit = max(0, len(pattern) - 1)
+    last_snapshot: dict | None = None
 
     while True:
+        if deadline is not None and time.time() >= deadline:
+            summary, hint = _format_wait_timeout(
+                timeout_seconds=timeout_seconds
+                if timeout_seconds is not None
+                else BG_WAIT_AGENT_TIMEOUT_SECONDS,
+                job_ref=job_ref,
+                pattern=pattern,
+                still_running=[last_snapshot] if last_snapshot is not None else None,
+            )
+            raise WaitTimeoutError(summary, hint)
         job = load_job_snapshot(job_ref, refresh_process=True)
+        last_snapshot = job
         if job is None:
             raise click.ClickException(f"Job not found: {job_ref}")
         if job.get("record_state") != "ok":
@@ -1093,7 +1310,11 @@ def wait_for_match(job_ref: str, pattern: str) -> dict:
         time.sleep(0.2)
 
 
-def wait_for_all_jobs() -> list[dict]:
+def wait_for_all_jobs(
+    *,
+    deadline: float | None = None,
+    timeout_seconds: float | None = None,
+) -> list[dict]:
     targets = {
         str(job["uid"])
         for job in scan_jobs_from_disk(refresh_process=True)
@@ -1103,7 +1324,23 @@ def wait_for_all_jobs() -> list[dict]:
         return []
 
     while True:
-        active: list[dict] = []
+        if deadline is not None and time.time() >= deadline:
+            active: list[dict] = []
+            for job in scan_jobs_from_disk(refresh_process=True):
+                if str(job.get("uid")) not in targets:
+                    continue
+                if job.get("record_state") != "ok":
+                    continue
+                if not is_terminal_snapshot(job):
+                    active.append(job)
+            summary, hint = _format_wait_timeout(
+                timeout_seconds=timeout_seconds
+                if timeout_seconds is not None
+                else BG_WAIT_AGENT_TIMEOUT_SECONDS,
+                still_running=active,
+            )
+            raise WaitTimeoutError(summary, hint)
+        active = []
         for job in scan_jobs_from_disk(refresh_process=True):
             if str(job.get("uid")) not in targets:
                 continue
@@ -1980,13 +2217,44 @@ def status(job_ref: str) -> None:
 @main.command("wait")
 @click.argument("job_ref")
 @click.option("--match", "pattern", default=None, help="Wait for output pattern")
-def wait(job_ref: str, pattern: str | None = None) -> None:
+@click.option(
+    "--timeout",
+    "timeout_seconds",
+    type=click.FloatRange(min=0),
+    default=None,
+    help=(
+        "Max seconds to wait before exiting the wait loop "
+        "(default: 120 in non-TTY/agent mode, infinite in TTY/interactive). "
+        "0 disables the cap."
+    ),
+)
+def wait(
+    job_ref: str,
+    pattern: str | None = None,
+    timeout_seconds: float | None = None,
+) -> None:
     """Wait for a job to complete or match output."""
+    deadline = resolve_wait_deadline(timeout_seconds)
     try:
         if pattern is not None:
-            wait_for_match(job_ref, pattern)
+            wait_for_match(
+                job_ref,
+                pattern,
+                deadline=deadline,
+                timeout_seconds=timeout_seconds,
+            )
         else:
-            wait_for_completion(job_ref)
+            wait_for_completion(
+                job_ref,
+                deadline=deadline,
+                timeout_seconds=timeout_seconds,
+            )
+    except WaitTimeoutError as exc:
+        click.echo(exc.summary, err=True)
+        if exc.hint:
+            click.echo("", err=True)
+            click.echo(exc.hint, err=True)
+        sys.exit(0)
     except click.ClickException:
         raise
     except Exception as exc:  # pragma: no cover - surfaced to CLI
@@ -1994,10 +2262,28 @@ def wait(job_ref: str, pattern: str | None = None) -> None:
 
 
 @main.command("wait-all")
-def wait_all() -> None:
+@click.option(
+    "--timeout",
+    "timeout_seconds",
+    type=click.FloatRange(min=0),
+    default=None,
+    help=(
+        "Max seconds to wait before exiting the wait loop "
+        "(default: 120 in non-TTY/agent mode, infinite in TTY/interactive). "
+        "0 disables the cap."
+    ),
+)
+def wait_all(timeout_seconds: float | None = None) -> None:
     """Wait for all known jobs to finish."""
+    deadline = resolve_wait_deadline(timeout_seconds)
     try:
-        wait_for_all_jobs()
+        wait_for_all_jobs(deadline=deadline, timeout_seconds=timeout_seconds)
+    except WaitTimeoutError as exc:
+        click.echo(exc.summary, err=True)
+        if exc.hint:
+            click.echo("", err=True)
+            click.echo(exc.hint, err=True)
+        sys.exit(0)
     except click.ClickException:
         raise
     except Exception as exc:  # pragma: no cover - surfaced to CLI
